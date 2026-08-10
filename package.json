@@ -16,7 +16,11 @@
     "no-telemetry": "./dist/cli.mjs"
   },
   "files": [
-    "dist"
+    "dist",
+    "skills",
+    "LICENSE",
+    "CHANGELOG.md",
+    "README.md"
   ],
   "type": "module",
   "exports": {
