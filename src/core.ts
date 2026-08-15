@@ -21,12 +21,12 @@ export type LibraryResult = {
   installed: boolean;
   status: Status;
   detail: string;
-  /** Env keys relevant to this library (length 0–1 in v0.1; array for forward-compat). */
+  /** Env keys relevant to this library (primary + optional alsoSatisfiedBy bindings). */
   env: EnvBinding[];
 };
 
-/** Init write targets (Phase 1). Default `.env`. */
-export type InitTarget = ".env" | ".env.local" | "stdout";
+/** Init write targets. Default `.env`. */
+export type InitTarget = ".env" | ".env.local" | ".env.example" | "stdout";
 
 export type ScanOptions = {
   /**
@@ -44,6 +44,8 @@ export type PlanInitOptions = {
 export type ApplyInitOptions = {
   /** Where to write adds. `stdout` returns lines without writing. Default `.env`. */
   target?: InitTarget;
+  /** Version string embedded in the generated comment block. */
+  version?: string;
 };
 
 export type ApplyInitResult = {
@@ -56,7 +58,7 @@ export type ApplyInitResult = {
   path: string | null;
 };
 
-/** Policy fail for `check` — currently identical to status === "enabled". */
+/** Policy fail for `check` - currently identical to status === "enabled". */
 export function failsCheck(result: LibraryResult): boolean {
   return result.status === "enabled";
 }
@@ -87,7 +89,7 @@ export function isInstalled(entry: RegistryEntry, deps: Set<string>): boolean {
   return entry.packages.some((p) => packageMatches(p, deps));
 }
 
-/** Minimal .env parser — KEY=VALUE, optional quotes, # comments. */
+/** Minimal .env parser - KEY=VALUE, optional quotes, # comments. */
 export function parseEnvFile(content: string): Record<string, string> {
   const out: Record<string, string> = {};
   for (const line of content.split(/\r?\n/)) {
@@ -178,7 +180,7 @@ export function evaluate(
         entry,
         true,
         "unsupported",
-        entry.notes ? `(${entry.notes})` : "(opt-out is config-based — not supported yet)",
+        entry.notes ? `(${entry.notes})` : "(opt-out is config-based - not supported yet)",
         [],
       );
 
@@ -187,21 +189,30 @@ export function evaluate(
       if (binding.actual !== undefined && entry.enableWhen.includes(binding.actual)) {
         return result(entry, true, "enabled", `${entry.env.key}=${binding.actual}`, [binding]);
       }
-      return result(entry, true, "not_applicable", "(opt-in, not enabled — no action needed)", [
+      return result(entry, true, "not_applicable", "(opt-in, not enabled - no action needed)", [
         binding,
       ]);
     }
 
     case "opt-out": {
-      const binding = resolveEnvBinding(entry.env.key, fileEnv, processEnv, entry.env.value);
-      if (binding.actual === entry.env.value) {
-        return result(entry, true, "disabled", `${entry.env.key}=${entry.env.value}`, [binding]);
+      // Primary first. Fallback alternates only apply while the primary key is unset.
+      const signals = [entry.env, ...(entry.alsoSatisfiedBy ?? [])];
+      const env = signals.map((s) => resolveEnvBinding(s.key, fileEnv, processEnv, s.value));
+      const primary = env[0]!;
+      const primaryHit = primary.actual === entry.env.value ? entry.env : undefined;
+      const canUseAlternates = entry.alternatePolicy !== "fallback" || primary.actual === undefined;
+      const alternateHit = canUseAlternates
+        ? signals.slice(1).find((s, i) => env[i + 1]!.actual === s.value)
+        : undefined;
+      const hit = primaryHit ?? alternateHit;
+      if (hit) {
+        return result(entry, true, "disabled", `${hit.key}=${hit.value}`, env);
       }
       const detail =
-        binding.actual === undefined
+        primary.actual === undefined
           ? `${entry.env.key} (not set)`
-          : `${entry.env.key}=${binding.actual} (want ${entry.env.value})`;
-      return result(entry, true, "enabled", detail, [binding]);
+          : `${entry.env.key}=${primary.actual} (want ${entry.env.value})`;
+      return result(entry, true, "enabled", detail, env);
     }
   }
 }
@@ -229,7 +240,7 @@ function targetFileName(target: InitTarget): string | null {
 export function planInit(cwd: string, options: PlanInitOptions = {}): InitPlanItem[] {
   const target = options.target ?? ".env";
   const deps = readDeps(cwd);
-  // init only cares about the write-target file — shell env is session-local
+  // init only cares about the write-target file - shell env is session-local
   const fileName = targetFileName(target);
   const fileEnv = fileName ? loadEnvFile(cwd, fileName) : {};
 
@@ -253,6 +264,11 @@ export function planInit(cwd: string, options: PlanInitOptions = {}): InitPlanIt
     else items.push({ kind: "conflict", env, existing });
   }
   return items;
+}
+
+/** Comment header written above vars for auditability (`# no-telemetry <ver> - ISO`). */
+export function initCommentBlock(version = "0.0.0", when = new Date()): string {
+  return `# no-telemetry ${version} - ${when.toISOString()}`;
 }
 
 /** Append missing keys to target file; never overwrite. stdout returns lines only. */
@@ -279,7 +295,7 @@ export function applyInit(
   let content = existsSync(path) ? readFileSync(path, "utf8") : "";
   if (content && !content.endsWith("\n")) content += "\n";
 
-  const block = ["", "# no-telemetry", ...lines, ""].join("\n");
+  const block = ["", initCommentBlock(options.version ?? "0.0.0"), ...lines, ""].join("\n");
 
   writeFileSync(path, content + block, "utf8");
   return { added: toAdd.length, already, conflict, lines, path };
@@ -301,7 +317,7 @@ export type FilterOptions = {
   ignore?: string[];
 };
 
-/** Presentation / ignore filter — does not change scan() or policy inputs. */
+/** Presentation / ignore filter - does not change scan() or policy inputs. */
 export function filterResults(results: LibraryResult[], opts: FilterOptions = {}): LibraryResult[] {
   let out = results;
   if (opts.ignore?.length) {

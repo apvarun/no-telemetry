@@ -16,27 +16,34 @@ Detect installed JS/TS libraries that collect telemetry and set the correct envi
 - After `pnpm add` / `npm install` / `yarn add` of framework or CLI tooling
 - Before opening a PR, or as a CI step
 - When the user asks to disable telemetry or prove it is off
+- When you need to know which libraries are covered (`list` / `why`)
 
 ## Commands (copy-paste)
 
 ```bash
-# Apply opt-outs (non-interactive — always pass -y for agents)
-npx no-telemetry init -y --json
+# Apply opt-outs (non-interactive - always pass -y for agents)
+npx no-telemetry init -y --json=compact
 
 # Verify (exit 1 if anything still enabled)
-npx no-telemetry check --json
+npx no-telemetry check --json=compact
 
 # Report only (always exit 0)
-npx no-telemetry doctor --json
+npx no-telemetry doctor --json=compact
+
+# Discover coverage (no package.json required)
+npx no-telemetry list --json=compact
+npx no-telemetry why next --json=compact
 ```
 
 Optional:
 
 ```bash
 npx no-telemetry init -y --target .env.local
-npx no-telemetry init -y --target stdout   # KEY=VAL lines on stdout only
+npx no-telemetry init -y --example          # commit-safe .env.example
+npx no-telemetry init -y --target stdout    # KEY=VAL lines on stdout only
 npx no-telemetry doctor --only installed
 npx no-telemetry check --ignore netlify-cli
+npx no-telemetry check --json --quiet       # compact + no stderr noise
 ```
 
 ## Exit codes
@@ -44,30 +51,38 @@ npx no-telemetry check --ignore netlify-cli
 | Code | Meaning                                                                                    |
 | ---- | ------------------------------------------------------------------------------------------ |
 | `0`  | Success (`doctor` always; `check` when policy passes; `init` applied or noop)              |
-| `1`  | Policy failure — `check` found enabled telemetry; or user aborted `init`                   |
-| `2`  | Tool/usage error — bad flags, no `package.json`, or non-interactive `init` without `--yes` |
+| `1`  | Policy failure - `check` found enabled telemetry; or user aborted `init`                   |
+| `2`  | Tool/usage error - bad flags, no `package.json`, or non-interactive `init` without `--yes` |
 
 Agents **must** pass `--yes` / `-y` for `init`. Non-TTY and `CI=true` sessions refuse to prompt.
 
+Prefer `--json=compact` (or `--json --quiet`) for agent pipes - one line, no pretty-print padding.
+
 ## Interpreting `--json`
 
-Top-level shape (`version: 1`):
+Top-level shape (`version: 1`) for doctor/check/init:
 
 - `summary.enabled` / `summary.disabled` / `summary.applicable`
 - `libraries[]`: `id`, `status`, `failsCheck`, `env[]` with `source` (`process-env` | `env-file` | `unset`)
 - `actions[]` on `init` (adds / conflicts)
 
+`list` returns `{ version: 1, libraries: [...] }` (full registry).
+`why` returns a single-entry object with `id`, `env`, `docs`, `notes`, …
+
 Status tokens: `disabled` | `enabled` | `not_applicable` | `not_found` | `unsupported`.
 
 `check` fails when any non-ignored library has `failsCheck: true` (status `enabled`).
 
+Alternate signals use OR semantics by default. If a `why` / `list` row reports `alternatePolicy: "fallback"`, its `alsoSatisfiedBy` values apply only while the primary env key is unset.
+
 ## Rules
 
-1. **Never send network requests** as part of this tool — it is offline by design.
-2. **Do not invent env vars** — only write what `init` plans.
+1. **Never send network requests** as part of this tool - it is offline by design.
+2. **Do not invent env vars** - only write what `init` plans.
 3. **Do not overwrite** conflicting values; report conflicts and let the human fix them.
-4. Prefer committing opt-out vars that belong in the project (`.env` / `.env.local` per team policy). Do not commit secrets; these opt-outs are not secrets.
-5. After changing dependencies, re-run `check --json`.
+4. Prefer committing opt-out vars that belong in the project (`.env` / `.env.local` / `.env.example` per team policy). Do not commit secrets; these opt-outs are not secrets.
+5. After changing dependencies, re-run `check --json=compact`.
+6. Use `list` / `why <id>` before guessing coverage.
 
 ## Programmatic (Node)
 

@@ -1,6 +1,6 @@
 import { failsCheck, type LibraryResult, type InitPlanItem } from "./core.ts";
 
-/** Wire format version — bump only on breaking JSON shape changes. */
+/** Wire format version - bump only on breaking JSON shape changes. */
 export type ReportVersion = 1;
 
 export type ReportSummary = {

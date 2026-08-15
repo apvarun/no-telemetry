@@ -12,6 +12,7 @@ export {
   evaluate,
   planInit,
   applyInit,
+  initCommentBlock,
   parseEnvFile,
   loadEnvFile,
   loadProjectEnv,

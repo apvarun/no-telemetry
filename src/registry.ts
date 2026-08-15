@@ -17,7 +17,16 @@ type RegistryBase = {
 /** Telemetry on by default; disable by setting env to `value`. */
 export type OptOutEntry = RegistryBase & {
   kind: "opt-out";
+  /** Primary opt-out - what `init` writes. */
   env: EnvOptOut;
+  /**
+   * Additional env signals that also count as disabled (OR with `env` by default).
+   * Example: Turbo honors `TURBO_TELEMETRY_DISABLED=1` *or* `DO_NOT_TRACK=1`.
+   * Init still only writes primary `env` (+ global DO_NOT_TRACK).
+   */
+  alsoSatisfiedBy?: EnvOptOut[];
+  /** `fallback` consults alternate signals only when the primary key is unset. Default `or`. */
+  alternatePolicy?: "or" | "fallback";
 };
 
 /**
@@ -39,7 +48,7 @@ export type UnsupportedEntry = RegistryBase & {
 export type RegistryEntry = OptOutEntry | OptInEntry | UnsupportedEntry;
 
 /**
- * Curated registry — hardcoded, no network.
+ * Curated registry - hardcoded, no network.
  *
  * Scope: tools commonly present as direct deps/devDeps in JS/TS projects (2025–2026),
  * plus high-traffic CLIs published on npm. Cross-checked against official docs and
@@ -104,6 +113,7 @@ export const REGISTRY: RegistryEntry[] = [
     name: "create-better-t-stack",
     packages: ["create-better-t-stack"],
     env: { key: "BTS_TELEMETRY_DISABLED", value: "1" },
+    docs: "https://www.npmjs.com/package/create-better-t-stack#disabling-telemetry",
   },
 
   // ── Build / monorepo / DX ────────────────────────────────────────────────
@@ -113,6 +123,8 @@ export const REGISTRY: RegistryEntry[] = [
     name: "Turborepo",
     packages: ["turbo"],
     env: { key: "TURBO_TELEMETRY_DISABLED", value: "1" },
+    alsoSatisfiedBy: [{ key: "DO_NOT_TRACK", value: "1" }],
+    notes: "Also disabled when DO_NOT_TRACK=1",
     docs: "https://turborepo.dev/docs/telemetry",
   },
   {
@@ -193,7 +205,8 @@ export const REGISTRY: RegistryEntry[] = [
     name: "Railway CLI",
     packages: ["railway", "@railway/cli"],
     env: { key: "RAILWAY_NO_TELEMETRY", value: "1" },
-    notes: "Also honors DO_NOT_TRACK=1",
+    alsoSatisfiedBy: [{ key: "DO_NOT_TRACK", value: "1" }],
+    notes: "Also disabled when DO_NOT_TRACK=1",
     docs: "https://docs.railway.com/cli/telemetry",
   },
   {
@@ -294,7 +307,9 @@ export const REGISTRY: RegistryEntry[] = [
     kind: "opt-out",
     name: "Hookdeck CLI",
     packages: ["hookdeck-cli", "@hookdeck/cli"],
-    env: { key: "HOOKDECK_CLI_TELEMETRY_OPTOUT", value: "1" },
+    env: { key: "HOOKDECK_CLI_TELEMETRY_DISABLED", value: "1" },
+    notes: "Also accepts true; CLI: hookdeck telemetry disabled",
+    docs: "https://github.com/hookdeck/hookdeck-cli#telemetry",
   },
   {
     id: "stripe-cli",
@@ -302,7 +317,7 @@ export const REGISTRY: RegistryEntry[] = [
     name: "Stripe CLI",
     packages: ["@stripe/cli"],
     env: { key: "STRIPE_CLI_TELEMETRY_OPTOUT", value: "1" },
-    notes: "CLI only — not the stripe Node SDK package",
+    notes: "CLI only - not the stripe Node SDK package",
     docs: "https://docs.stripe.com/cli/telemetry",
   },
   {
@@ -321,7 +336,8 @@ export const REGISTRY: RegistryEntry[] = [
     name: "Supabase CLI",
     packages: ["supabase"],
     env: { key: "SUPABASE_TELEMETRY_DISABLED", value: "1" },
-    notes: "Also honors DO_NOT_TRACK=1",
+    alsoSatisfiedBy: [{ key: "DO_NOT_TRACK", value: "1" }],
+    notes: "Also disabled when DO_NOT_TRACK=1",
     docs: "https://supabase.com/docs/guides/local-development/cli/getting-started#telemetry",
   },
   {
@@ -366,6 +382,7 @@ export const REGISTRY: RegistryEntry[] = [
     name: "Claude Code",
     packages: ["@anthropic-ai/claude-code"],
     env: { key: "DISABLE_TELEMETRY", value: "1" },
+    alsoSatisfiedBy: [{ key: "DO_NOT_TRACK", value: "1" }],
     notes:
       "Official docs: any non-empty value opts out (we recommend 1). Also honors DO_NOT_TRACK; CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 is broader",
     docs: "https://code.claude.com/docs/en/env-vars",
@@ -386,8 +403,14 @@ export const REGISTRY: RegistryEntry[] = [
     name: "GitHub CLI",
     packages: ["@cli/cli", "gh"],
     env: { key: "GH_TELEMETRY", value: "false" },
+    // Docs show DO_NOT_TRACK=true; 1 is the Console DNT convention we write via init.
+    alsoSatisfiedBy: [
+      { key: "DO_NOT_TRACK", value: "1" },
+      { key: "DO_NOT_TRACK", value: "true" },
+    ],
+    alternatePolicy: "fallback",
     notes:
-      "Usually brew/system install; also honors DO_NOT_TRACK. Rare npm package names included for completeness",
+      "Usually brew/system install; also honors DO_NOT_TRACK (1 or true). Rare npm package names included for completeness",
     docs: "https://github.blog/changelog/2026-04-22-github-cli-opt-out-usage-telemetry/",
   },
 
@@ -399,6 +422,7 @@ export const REGISTRY: RegistryEntry[] = [
     packages: ["better-auth"],
     env: { key: "BETTER_AUTH_TELEMETRY", value: "0" },
     enableWhen: ["1", "true"],
+    docs: "https://www.better-auth.com/docs/reference/telemetry",
   },
 
   // ── Compilers / other ────────────────────────────────────────────────────
@@ -407,7 +431,7 @@ export const REGISTRY: RegistryEntry[] = [
     kind: "unsupported",
     name: "Stencil",
     packages: ["@stencil/core"],
-    notes: "CLI: npx stencil telemetry off — no documented env-var opt-out",
+    notes: "CLI: npx stencil telemetry off - no documented env-var opt-out",
     docs: "https://stenciljs.com/docs/telemetry",
   },
   {
@@ -426,7 +450,7 @@ export const REGISTRY: RegistryEntry[] = [
     kind: "unsupported",
     name: "Yarn",
     packages: ["yarn"],
-    notes: "Yarn 2+ uses .yarnrc.yml enableTelemetry: false — config-based",
+    notes: "Yarn 2+ uses .yarnrc.yml enableTelemetry: false - config-based",
     docs: "https://yarnpkg.com/configuration/yarnrc#enableTelemetry",
   },
   {
@@ -435,8 +459,9 @@ export const REGISTRY: RegistryEntry[] = [
     name: "Firebase CLI",
     packages: ["firebase-tools"],
     notes: "No documented env-var opt-out found; track for config support later",
+    docs: "https://firebase.google.com/docs/cli",
   },
 ];
 
-/** Always written by `init` — harmless universal fallback. */
+/** Always written by `init` - harmless universal fallback. */
 export const DO_NOT_TRACK: EnvOptOut = { key: "DO_NOT_TRACK", value: "1" };

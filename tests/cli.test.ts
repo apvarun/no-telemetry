@@ -264,3 +264,138 @@ test("cli init error JSON uses ReportV1 with error field", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("cli list --json dumps registry without package.json", () => {
+  const dir = join(tmpdir(), `no-telemetry-list-${Date.now()}`);
+  mkdirSync(dir, { recursive: true });
+  try {
+    const r = run(["list", "--json"], { cwd: dir, env: { ...process.env, CI: "" } });
+    expect(r.status).toBe(0);
+    const json = JSON.parse(r.stdout);
+    expect(json.version).toBe(1);
+    expect(Array.isArray(json.libraries)).toBe(true);
+    expect(json.libraries.length).toBeGreaterThan(10);
+    expect(json.libraries.some((l: { id: string }) => l.id === "next")).toBe(true);
+    const turbo = json.libraries.find((l: { id: string }) => l.id === "turbo");
+    const github = json.libraries.find((l: { id: string }) => l.id === "github-cli");
+    expect(turbo.env.alternatePolicy).toBe("or");
+    expect(github.env.alternatePolicy).toBe("fallback");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("cli why next shows env and docs", () => {
+  const r = run(["why", "next"], { cwd: root });
+  expect(r.status).toBe(0);
+  expect(r.stdout).toContain("NEXT_TELEMETRY_DISABLED=1");
+  expect(r.stdout).toMatch(/nextjs\.org\/telemetry/);
+});
+
+test("cli why --json next", () => {
+  const r = run(["why", "next", "--json"], { cwd: root });
+  expect(r.status).toBe(0);
+  const json = JSON.parse(r.stdout);
+  expect(json.id).toBe("next");
+  expect(json.env.key).toBe("NEXT_TELEMETRY_DISABLED");
+  expect(json.docs).toContain("nextjs.org");
+});
+
+test("cli why unknown id exits 2", () => {
+  const r = run(["why", "not-a-real-lib"], { cwd: root });
+  expect(r.status).toBe(2);
+});
+
+test("cli why missing id emits compact JSON error", () => {
+  const r = run(["why", "--json=compact"], { cwd: root });
+  expect(r.status).toBe(2);
+  expect(r.stderr).toBe("");
+  expect(r.stdout.trim().split("\n")).toHaveLength(1);
+  const json = JSON.parse(r.stdout);
+  expect(json.version).toBe(1);
+  expect(json.error).toMatch(/why <id>/);
+});
+
+test("cli why missing id keeps JSON under --quiet", () => {
+  const r = run(["why", "--json", "--quiet"], { cwd: root });
+  expect(r.status).toBe(2);
+  expect(r.stderr).toBe("");
+  expect(r.stdout.trim().split("\n")).toHaveLength(1);
+  expect(JSON.parse(r.stdout).error).toMatch(/why <id>/);
+});
+
+test("cli --quiet suppresses runtime diagnostics", () => {
+  const dir = join(tmpdir(), `no-telemetry-quiet-${Date.now()}`);
+  mkdirSync(dir, { recursive: true });
+  try {
+    const r = run(["doctor", "--quiet"], { cwd: dir, env: { ...process.env, CI: "" } });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toBe("");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("cli --quiet suppresses unknown-command diagnostics", () => {
+  const r = run(["not-a-command", "--quiet"], { cwd: root });
+  expect(r.status).toBe(2);
+  expect(r.stderr).toBe("");
+  expect(r.stdout).toContain("Usage:");
+});
+
+test("cli --json=compact is one line", () => {
+  const dir = fixture({ dependencies: { next: "15" } }, "NEXT_TELEMETRY_DISABLED=1\n");
+  try {
+    const r = run(["check", "--json=compact"], { cwd: dir, env: { ...process.env, CI: "" } });
+    expect(r.status).toBe(0);
+    const lines = r.stdout.trim().split("\n");
+    expect(lines.length).toBe(1);
+    const json = JSON.parse(lines[0]!);
+    expect(json.version).toBe(1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("cli --quiet --json implies compact", () => {
+  const dir = fixture({ dependencies: { next: "15" } }, "NEXT_TELEMETRY_DISABLED=1\n");
+  try {
+    const r = run(["check", "--json", "--quiet"], { cwd: dir, env: { ...process.env, CI: "" } });
+    expect(r.status).toBe(0);
+    expect(r.stdout.trim().split("\n").length).toBe(1);
+    expect(r.stderr.trim()).toBe("");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("cli init --example writes .env.example", () => {
+  const dir = fixture({ dependencies: { next: "15" } });
+  try {
+    const r = run(["init", "-y", "--example"], {
+      cwd: dir,
+      env: { ...process.env, CI: "true" },
+    });
+    expect(r.status).toBe(0);
+    expect(existsSync(join(dir, ".env.example"))).toBe(true);
+    expect(existsSync(join(dir, ".env"))).toBe(false);
+    const body = readFileSync(join(dir, ".env.example"), "utf8");
+    expect(body).toContain("NEXT_TELEMETRY_DISABLED=1");
+    expect(body).toMatch(/# no-telemetry \d+\.\d+\.\d+ - /);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("cli check respects turbo via DO_NOT_TRACK only", () => {
+  const dir = fixture({ dependencies: { turbo: "2" } }, "DO_NOT_TRACK=1\n");
+  try {
+    const r = run(["check", "--json"], { cwd: dir, env: { ...process.env, CI: "" } });
+    expect(r.status).toBe(0);
+    const json = JSON.parse(r.stdout);
+    const turbo = json.libraries.find((l: { id: string }) => l.id === "turbo");
+    expect(turbo?.status).toBe("disabled");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

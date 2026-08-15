@@ -18,6 +18,7 @@ import {
   summarize,
 } from "../src/index.ts";
 import { REGISTRY } from "../src/registry.ts";
+import { shouldUseColor } from "../src/terminal.ts";
 
 function fixture(
   pkg: Record<string, unknown>,
@@ -71,6 +72,81 @@ test("evaluate: disabled when env matches", () => {
   expect(r.status).toBe("disabled");
   expect(failsCheck(r)).toBe(false);
   expect(r.env[0]?.source).toBe("process-env");
+});
+
+test("evaluate: multi-key alsoSatisfiedBy (turbo via DO_NOT_TRACK)", () => {
+  const turbo = REGISTRY.find((e) => e.id === "turbo")!;
+  expect(turbo.kind).toBe("opt-out");
+  if (turbo.kind !== "opt-out") return;
+  expect(turbo.alsoSatisfiedBy?.some((e) => e.key === "DO_NOT_TRACK")).toBe(true);
+
+  const viaDnt = evaluate(turbo, new Set(["turbo"]), {}, { DO_NOT_TRACK: "1" });
+  expect(viaDnt.status).toBe("disabled");
+  expect(failsCheck(viaDnt)).toBe(false);
+  expect(viaDnt.detail).toContain("DO_NOT_TRACK");
+
+  const viaPrimary = evaluate(turbo, new Set(["turbo"]), {}, { TURBO_TELEMETRY_DISABLED: "1" });
+  expect(viaPrimary.status).toBe("disabled");
+
+  const unset = evaluate(turbo, new Set(["turbo"]), {}, {});
+  expect(unset.status).toBe("enabled");
+});
+
+test("evaluate: fallback alternates respect GitHub CLI primary precedence", () => {
+  const github = REGISTRY.find((e) => e.id === "github-cli")!;
+  expect(github.kind).toBe("opt-out");
+  if (github.kind !== "opt-out") return;
+  expect(github.alternatePolicy).toBe("fallback");
+
+  const primaryEnabled = evaluate(
+    github,
+    new Set(["gh"]),
+    {},
+    {
+      GH_TELEMETRY: "enabled",
+      DO_NOT_TRACK: "1",
+    },
+  );
+  expect(primaryEnabled.status).toBe("enabled");
+  expect(failsCheck(primaryEnabled)).toBe(true);
+
+  const primaryDisabled = evaluate(
+    github,
+    new Set(["gh"]),
+    {},
+    {
+      GH_TELEMETRY: "false",
+      DO_NOT_TRACK: "1",
+    },
+  );
+  expect(primaryDisabled.status).toBe("disabled");
+
+  const viaFallback = evaluate(github, new Set(["gh"]), {}, { DO_NOT_TRACK: "true" });
+  expect(viaFallback.status).toBe("disabled");
+  expect(failsCheck(viaFallback)).toBe(false);
+});
+
+test("evaluate: default alternate policy retains OR semantics", () => {
+  const turbo = REGISTRY.find((e) => e.id === "turbo")!;
+  const result = evaluate(
+    turbo,
+    new Set(["turbo"]),
+    {},
+    {
+      TURBO_TELEMETRY_DISABLED: "0",
+      DO_NOT_TRACK: "1",
+    },
+  );
+  expect(result.status).toBe("disabled");
+});
+
+test("shouldUseColor resolves NO_COLOR, FORCE_COLOR, and TTY precedence", () => {
+  expect(shouldUseColor(true, {})).toBe(true);
+  expect(shouldUseColor(false, {})).toBe(false);
+  expect(shouldUseColor(false, { FORCE_COLOR: "1" })).toBe(true);
+  expect(shouldUseColor(true, { FORCE_COLOR: "0" })).toBe(false);
+  expect(shouldUseColor(true, { NO_COLOR: "1", FORCE_COLOR: "1" })).toBe(false);
+  expect(shouldUseColor(true, { NO_COLOR: "" })).toBe(true);
 });
 
 test("evaluate: enabled when env missing", () => {
@@ -143,6 +219,11 @@ test("registry kinds and ids are unique and well-formed", () => {
       expect(entry.enableWhen.length).toBeGreaterThan(0);
     }
   }
+});
+
+test("registry: every entry has docs URL", () => {
+  const missing = REGISTRY.filter((e) => !e.docs);
+  expect(missing.map((e) => e.id)).toEqual([]);
 });
 
 test("planInit + applyInit is idempotent", () => {
@@ -286,6 +367,12 @@ test("golden: every registry entry has correct status matrix", () => {
     const wrong = evaluate(entry, depsInstalled, {}, { [entry.env.key]: "__WRONG__" });
     expect(wrong.status).toBe("enabled");
     expect(failsCheck(wrong)).toBe(true);
+
+    for (const alt of entry.alsoSatisfiedBy ?? []) {
+      const viaAlt = evaluate(entry, depsInstalled, {}, { [alt.key]: alt.value });
+      expect(viaAlt.status).toBe("disabled");
+      expect(failsCheck(viaAlt)).toBe(false);
+    }
   }
 });
 
@@ -373,6 +460,21 @@ test("planInit + applyInit --target .env.local", () => {
     const body = readFileSync(join(dir, ".env.local"), "utf8");
     expect(body).toContain("NEXT_TELEMETRY_DISABLED=1");
     expect(scan(dir, {}).find((x) => x.entry.id === "next")!.status).toBe("disabled");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("planInit + applyInit --target .env.example", () => {
+  const dir = fixture({ dependencies: { next: "15" } });
+  try {
+    const plan = planInit(dir, { target: ".env.example" });
+    const r = applyInit(dir, plan, { target: ".env.example", version: "0.1.0" });
+    expect(r.added).toBeGreaterThan(0);
+    expect(existsSync(join(dir, ".env"))).toBe(false);
+    const body = readFileSync(join(dir, ".env.example"), "utf8");
+    expect(body).toContain("NEXT_TELEMETRY_DISABLED=1");
+    expect(body).toMatch(/# no-telemetry 0\.1\.0 - /);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
