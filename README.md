@@ -1,6 +1,8 @@
 # no-telemetry
 
-Detect which JavaScript/TypeScript libraries in your project have telemetry, and set the correct environment variables to disable it - in one command.
+Find supported JavaScript and TypeScript tools in your project that collect telemetry, then set the documented environment variables to disable it.
+
+## Quick start
 
 ```bash
 npx no-telemetry init -y   # write opt-out vars to .env
@@ -17,28 +19,29 @@ npx no-telemetry list --json            # registry coverage (no project needed)
 npx no-telemetry why next --json        # env + docs for one library
 ```
 
+## Scope
+
+`no-telemetry` scans one `package.json` in the current directory. It checks direct `dependencies` and `devDependencies`, not workspaces or transitive dependencies.
+
+The registry covers environment-variable opt-outs. Tools that require config files or CLI state are reported as `unsupported`. The CLI does not edit shell profiles, download a registry, or make network requests.
+
 ## CI (GitHub Actions)
 
-Add a policy gate after install. No generator required:
+Pin the version so policy does not change unexpectedly:
 
 ```yaml
 - name: Telemetry opt-out check
-  run: npx no-telemetry check
+  run: npx --yes no-telemetry@0.1.0 check --json=compact
 ```
 
-With structured output (useful for artifacts / debugging):
+To apply opt-outs after scaffolding, then verify them:
 
 ```yaml
-- name: Telemetry opt-out check
-  run: npx no-telemetry check --json=compact
+- run: npx --yes no-telemetry@0.1.0 init -y
+- run: npx --yes no-telemetry@0.1.0 check --json=compact
 ```
 
-After scaffolding a new app in CI, apply then verify:
-
-```yaml
-- run: npx no-telemetry init -y
-- run: npx no-telemetry check
-```
+The first `--yes` accepts the `npx` install. The `-y` after `init` accepts the file write.
 
 ## Commands
 
@@ -50,36 +53,37 @@ Reads `package.json` (`dependencies` + `devDependencies`), matches them against 
 | ----------------- | -------------------------------------------------------------------- |
 | `--yes` / `-y`    | Skip confirmation (required when non-TTY or `CI=true`)               |
 | `--dry-run`       | Show what would be written, don't write                              |
-| `--json`          | Machine-readable report (`version: 1`) on stdout                     |
+| `--json`          | Machine-readable report (`version: 1`)                               |
 | `--target <path>` | `.env` (default), `.env.local`, `.env.example`, or `stdout`          |
 | `--example`       | Shorthand for `--target .env.example` (commit-safe opt-out template) |
 
-`init` does **not** accept `--only`, `--ignore`, or `--all` (those are doctor/check only).
+`init` does not accept `--only`, `--ignore`, or `--all` (those are doctor/check only).
 
 - Creates the target file if needed (not for `stdout`)
 - Skips vars already set correctly
 - Never overwrites a different value (warns instead)
 - Always includes `DO_NOT_TRACK=1`
-- Writes a versioned comment header (`# no-telemetry 0.1.0 - <ISO timestamp>`)
+- Writes a versioned comment header (`# no-telemetry <version> - <ISO timestamp>`)
 - `stdout` mode: pure `KEY=VAL` lines on stdout; diagnostics on stderr
+- With `--target stdout --json`, dotenv lines stay on stdout and the JSON report goes to stderr
 - `--example` / `.env.example`: same keys as `.env`, safe to commit (no secrets)
 
 ### `doctor`
 
 Prints a per-library table. Installed libraries matter for the summary. Human table hides `not found` by default (`--all` to show). Always exits 0.
 
-| Flag                           | Meaning                                     |
-| ------------------------------ | ------------------------------------------- |
-| `--json`                       | Full machine-readable report                |
-| `--only installed` / `failing` | Filter display rows                         |
-| `--ignore <id>`                | Omit library (by stable id or package name) |
-| `--all`                        | Include not-found rows in human table       |
+| Flag              | Meaning                               |
+| ----------------- | ------------------------------------- |
+| `--json`          | Full machine-readable report          |
+| `--only <filter>` | `installed` or `failing`              |
+| `--ignore <id>`   | Omit a library; repeatable            |
+| `--all`           | Include not-found rows in human table |
 
-`doctor` / `check` do **not** accept `--yes`, `--dry-run`, or `--target`.
+`doctor` / `check` do not accept `--yes`, `--dry-run`, or `--target`.
 
 ### `check`
 
-Same output as `doctor`, but exits **1** if any installed, applicable library still has telemetry enabled (after `--ignore`). Use in CI:
+Same output as `doctor`, but exits `1` if any installed, applicable library still has telemetry enabled (after `--ignore`). Use in CI:
 
 ```bash
 npx no-telemetry check
@@ -130,30 +134,25 @@ npx no-telemetry why turbo --json
 
 ## Registry
 
-Library opt-outs live in [`src/registry.ts`](./src/registry.ts) - the single source of truth (not duplicated here). Each entry has a stable `id` (e.g. `next`, `prisma`, `vercel`) for `--ignore`, `why`, and JSON output.
+Library opt-outs live in [`src/registry.ts`](./src/registry.ts), the single source of truth. Each entry has a stable `id` (e.g. `next`, `prisma`, `vercel`) for `--ignore`, `why`, and JSON output.
 
-Coverage focuses on **popular JS/TS project deps and npm CLIs** (frameworks, monorepo tools, deploy CLIs, AI CLIs, data platforms). Config-only tools (Netlify, Yarn, Ionic, …) are listed as `unsupported` so `doctor` still surfaces them. Research lists like [toptout](https://github.com/beatcracker/toptout) are useful seeds; every var is curated and re-verified - we do not bulk-import stale catalogs.
+Coverage focuses on popular JS/TS project dependencies and npm CLIs: frameworks, monorepo tools, deploy CLIs, AI CLIs, and data platforms. Config-only tools (Netlify, Yarn, Ionic, …) are listed as `unsupported` so `doctor` still surfaces them. Research lists like [toptout](https://github.com/beatcracker/toptout) are useful seeds; every variable is curated and checked against official documentation.
 
-`doctor` / `check` resolve env from **process env** (wins), then **`.env`**, then **`.env.local`** (local overrides `.env`).
+`doctor` / `check` resolve env from process env (wins), then `.env`, then `.env.local` (local overrides `.env`).
 
-Some tools honor a proprietary opt-out **or** `DO_NOT_TRACK` (e.g. Turbo, Railway, Supabase). Alternate signals use OR semantics by default. Entries with `alternatePolicy: "fallback"` use alternates only when the primary key is unset; this models tools such as GitHub CLI where `GH_TELEMETRY` takes precedence. `init` still writes the primary library-specific key plus `DO_NOT_TRACK=1`.
-
-## Scope
-
-Version 0.1 scans one `package.json` in the current directory and detects direct `dependencies` and `devDependencies` only. It does not traverse workspaces or inspect transitive dependencies.
-
-The registry models environment-variable opt-outs. Tools that require config files or CLI state are reported as `unsupported`; `init` does not mutate those settings. The CLI never edits shell profiles, downloads a registry, or makes network requests.
+Some tools honor a proprietary opt-out or `DO_NOT_TRACK` (e.g. Turbo, Railway, Supabase). Alternate signals use OR semantics by default. Entries with `alternatePolicy: "fallback"` use alternates only when the primary key is unset; this models tools such as GitHub CLI where `GH_TELEMETRY` takes precedence. `init` still writes the primary library-specific key plus `DO_NOT_TRACK=1`.
 
 ## Programmatic API
 
-**Stable, ESM-only surface** (semver; Node 18+):
+Stable, ESM-only surface (Node 18+):
 
 ```ts
 import { scan, planInit, applyInit, failsCheck, buildReport, REGISTRY } from "no-telemetry";
 
-const results = scan(process.cwd());
+const cwd = process.cwd();
+const results = scan(cwd);
 const failing = results.filter(failsCheck);
-const report = buildReport(process.cwd(), results);
+const report = buildReport(cwd, results);
 ```
 
 | Export                             | Role                                      |
@@ -167,13 +166,14 @@ const report = buildReport(process.cwd(), results);
 
 `LibraryResult.status` uses machine-stable tokens: `disabled`, `enabled`, `not_applicable`, `not_found`, `unsupported`. The CLI maps these to human labels (`✓ disabled`, `- n/a`, …).
 
-Optional options (defaults shown):
+Target-specific plans must be applied to the same target:
 
 ```ts
-planInit(cwd, { target: ".env.local" });
-applyInit(cwd, plan, { target: "stdout" }); // returns { lines } without writing
-applyInit(cwd, plan, { target: ".env.example" });
-scan(cwd, processEnv, { envFiles: [".env", ".env.local"] });
+const target = ".env.local";
+const plan = planInit(cwd, { target });
+applyInit(cwd, plan, { target });
+
+scan(cwd, process.env, { envFiles: [".env", ".env.local"] });
 ```
 
 Registry entries are a discriminated union on `kind`:
@@ -185,10 +185,6 @@ Registry entries are a discriminated union on `kind`:
 | `unsupported` | No env-var opt-out (config/CLI only)          |
 
 `opt-out` may include `alsoSatisfiedBy` for extra env bindings and `alternatePolicy: "fallback"` when those bindings apply only while the primary key is unset. The default policy is `"or"`.
-
-## Agent skill
-
-Ship-ready instructions for coding agents: [`skills/no-telemetry/SKILL.md`](./skills/no-telemetry/SKILL.md).
 
 ## Development
 
@@ -204,15 +200,18 @@ The development toolchain runs on Node 22. The packed CLI and programmatic API a
 ```bash
 mkdir -p .artifacts
 pnpm pack --pack-destination .artifacts
-pnpm run test:package -- .artifacts/no-telemetry-0.1.0.tgz --tsc node_modules/.bin/tsc
+TARBALL=$(find .artifacts -name '*.tgz' -type f -print -quit)
+pnpm run test:package -- "$TARBALL" --tsc node_modules/.bin/tsc
 ```
 
 Zero production dependencies. Runtime support: Node 18+.
 
+## Project links
+
+- [Contributing](./CONTRIBUTING.md)
+- [Changelog](./CHANGELOG.md)
+- [Agent skill](./skills/no-telemetry/SKILL.md)
+
 ## License
 
 MIT
-
-## Package name
-
-`no-telemetry` was available on the npm registry at last check (no prior package). Publish with `npm publish` after CI is green.
