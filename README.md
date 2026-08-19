@@ -198,10 +198,10 @@ pnpm run build
 The development toolchain runs on Node 22. The packed CLI and programmatic API are smoke-tested on Node 18, 20, and 22:
 
 ```bash
-mkdir -p .artifacts
-pnpm pack --pack-destination .artifacts
-TARBALL=$(find .artifacts -name '*.tgz' -type f -print -quit)
-pnpm run test:package -- "$TARBALL" --tsc node_modules/.bin/tsc
+mkdir -p artifacts
+pnpm pack --pack-destination artifacts
+TARBALL=$(find artifacts -name '*.tgz' -type f -print -quit)
+pnpm run test:package "$TARBALL" --tsc node_modules/.bin/tsc
 ```
 
 Zero production dependencies. Runtime support: Node 18+.
