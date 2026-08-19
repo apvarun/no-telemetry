@@ -24,8 +24,14 @@
   ],
   "type": "module",
   "exports": {
-    ".": "./dist/index.mjs",
-    "./cli": "./dist/cli.mjs",
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    },
+    "./cli": {
+      "types": "./dist/cli.d.mts",
+      "import": "./dist/cli.mjs"
+    },
     "./package.json": "./package.json"
   },
   "publishConfig": {
@@ -35,6 +41,7 @@
     "build": "vp pack",
     "dev": "vp pack --watch",
     "test": "vp test",
+    "test:package": "node scripts/package-smoke.mjs",
     "check": "vp check",
     "prepublishOnly": "vp run build",
     "prepare": "vp config"

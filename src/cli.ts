@@ -573,7 +573,7 @@ Stable programmatic API (import "no-telemetry"):
 `);
 }
 
-async function main(): Promise<void> {
+async function main(): Promise<number> {
   let flags: CliFlags;
   try {
     flags = parseArgs(process.argv.slice(2));
@@ -582,24 +582,24 @@ async function main(): Promise<void> {
     if (e instanceof UsageError) {
       console.error(e.message);
       usage();
-      process.exit(EXIT_ERROR);
+      return EXIT_ERROR;
     }
     throw e;
   }
 
   if (flags.version) {
     console.log(packageVersion());
-    process.exit(EXIT_OK);
+    return EXIT_OK;
   }
 
   if (flags.help || flags.cmd === "help") {
     usage();
-    process.exit(EXIT_OK);
+    return EXIT_OK;
   }
 
   if (!flags.cmd) {
     usage();
-    process.exit(EXIT_ERROR);
+    return EXIT_ERROR;
   }
 
   const cwd = process.cwd();
@@ -621,7 +621,9 @@ async function main(): Promise<void> {
     else log(flags, msg);
     code = EXIT_ERROR;
   }
-  process.exit(code);
+  return code;
 }
 
-void main();
+void main().then((code) => {
+  process.exitCode = code;
+});

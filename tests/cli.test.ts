@@ -39,17 +39,13 @@ function run(
 
 beforeAll(() => {
   // Ensure dist is built for CLI integration tests
-  const built = spawnSync("pnpm", ["exec", "vp", "pack"], {
+  const built = spawnSync("vp", ["pack"], {
     cwd: root,
     encoding: "utf8",
     env: process.env,
   });
   if (built.status !== 0) {
-    // fallback
-    const alt = spawnSync("npx", ["vp", "pack"], { cwd: root, encoding: "utf8", env: process.env });
-    if (alt.status !== 0) {
-      throw new Error(`build failed:\n${built.stderr}\n${alt.stderr}`);
-    }
+    throw new Error(`build failed:\n${built.stderr}`);
   }
   if (!existsSync(cliPath)) throw new Error(`missing ${cliPath}`);
 });

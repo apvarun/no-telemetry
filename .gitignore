@@ -1,5 +1,7 @@
 node_modules
 dist
+.artifacts
+*.tgz
 *.log
 .DS_Store
 !.vscode/

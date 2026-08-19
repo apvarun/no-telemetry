@@ -5,52 +5,37 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.0]
 
 ### Added
 
-- CLI: `list` - dump registry without a project (`--json` / `--json=compact`).
-- CLI: `why <id>` - env, docs URL, notes, and alternate satisfaction signals.
-- `--json=compact` one-line JSON; `--quiet` / `-q` suppresses stderr chatter (and implies compact when used with `--json`).
-- `init --example` / `--target .env.example` for commit-safe opt-out templates.
-- README CI snippet (copy-paste GitHub Actions `check` step).
-- Optional CI job: fixture project (`next` + `turbo`) init → check smoke.
-- `opt-out.alsoSatisfiedBy` - multi-key env satisfaction (e.g. Turbo via `DO_NOT_TRACK=1`).
-- `opt-out.alternatePolicy` - fallback alternates for tools whose primary env key takes precedence.
-- `FORCE_COLOR` support; clearer `NO_COLOR` behavior (any non-empty value disables color).
-- Versioned generator comment: `# no-telemetry <version> - <ISO timestamp>`.
-- Registry schema / id-stability notes in `CONTRIBUTING.md`.
+- CLI commands: `init`, `doctor`, `check`, `list`, and `why <id>`.
+- Versioned `--json` and one-line `--json=compact` output on every command.
+- `--quiet` / `-q`, command-scoped flags, `--version`, and documented exit codes.
+- `init --target .env|.env.local|.env.example|stdout`, `--example`, `--dry-run`, and non-interactive `--yes` enforcement.
+- Doctor/check filters: `--only installed|failing`, `--ignore <id>`, and `--all`.
+- Curated 43-entry registry with stable IDs, official docs, opt-out, opt-in, and unsupported entries.
+- Alternate environment bindings with `"or"` and primary-key `"fallback"` precedence policies.
+- Environment source tracking across process env, `.env`, and `.env.local`.
+- ESM-only typed programmatic API: `scan`, `planInit`, `applyInit`, `failsCheck`, `buildReport`, `filterResults`, and `REGISTRY`.
+- Agent guidance in `skills/no-telemetry/SKILL.md` and registry contribution guidance.
+- Packed-package acceptance covering contents, zero runtime dependencies, ESM imports, declarations, CLI commands, and an `init` → `check` fixture.
+- CI quality checks on Node 22 and tarball runtime smoke tests on Node 18, 20, and 22.
+- `NO_COLOR` and `FORCE_COLOR` terminal behavior.
+- Versioned generated-file comment: `# no-telemetry <version> - <ISO timestamp>`.
 
 ### Fixed
 
-- GitHub CLI checks now respect `GH_TELEMETRY` precedence over `DO_NOT_TRACK`.
-- `FORCE_COLOR=0`, quiet runtime diagnostics, and missing-argument JSON errors now follow their documented output contracts.
-- Hookdeck CLI opt-out key corrected to `HOOKDECK_CLI_TELEMETRY_DISABLED`.
-- Filled remaining `docs` gaps (every registry entry now cites official docs).
-
-## [0.1.0] - 2026-08-10
-
-### Added
-
-- CLI: `init`, `doctor`, `check`.
-- Curated registry (~45 entries): frameworks (Angular, Strapi, Redwood, …), deploy CLIs (Vercel, Railway, AWS CDK/Blocks, Serverless, Salesforce, Supabase, Stripe CLI, …), data tools (Cube, Hasura, Meilisearch), Sentry/Promptfoo, AI/agent CLIs (Claude Code, Gemini CLI, GitHub CLI), plus config-only `unsupported` rows (Ionic, Capacitor, Amplify, Yarn, Firebase tools, Stencil).
-- Optional `docs` field on registry entries for verification links.
-- Agent-ready structured I/O: `--json` on all commands with report shape `version: 1`.
-- `init --target .env | .env.local | stdout` (default `.env`).
-- Non-interactive policy: when stdin is not a TTY or `CI=true`, `init` requires `--yes` / `-y`.
-- Filters: `--only installed|failing`, `--ignore <id>`, human table hides `not_found` unless `--all`.
-- `--version` / `-V` and polished `--help` (exit codes documented).
-- Programmatic API: `scan`, `planInit`, `applyInit`, `failsCheck`, `buildReport`, `filterResults`, `REGISTRY`.
-- `LibraryResult.env` with source tracking (`process-env` | `env-file` | `unset`).
-- Agent skill: `skills/no-telemetry/SKILL.md`.
-- Golden registry fixtures, CLI integration tests, GitHub Actions CI.
-- `CHANGELOG.md`, `CONTRIBUTING.md`.
-- Zero production dependencies; Node 18+.
+- GitHub CLI checks respect `GH_TELEMETRY` precedence over `DO_NOT_TRACK`, while entries such as Turbo retain unconditional OR behavior.
+- `FORCE_COLOR=0`, quiet runtime and unknown-command diagnostics, and missing-argument JSON errors follow their output contracts.
+- Hookdeck CLI uses the documented `HOOKDECK_CLI_TELEMETRY_DISABLED` key.
+- Every registry entry now cites official documentation.
 
 ### Behavior
 
-- Exit **0** success; **1** policy failure (`check` / aborted `init`); **2** tool/usage errors.
-- `doctor` / `check` load `.env` then `.env.local` (local wins); process env overrides both.
-- `init` never overwrites conflicting values; always includes `DO_NOT_TRACK=1`.
-- Command-scoped flags: wrong-command flags are usage errors (exit 2), not silent no-ops.
-- JSON errors use the same `version: 1` report shape with optional `error` (empty summary/libraries).
+- Exit 0 means success, exit 1 means policy failure or an aborted interactive init, and exit 2 means a usage or runtime error.
+- Process environment overrides env files; `.env.local` overrides `.env`.
+- `init` never overwrites conflicting values and always includes `DO_NOT_TRACK=1`.
+- Human output hides `not_found` rows by default; machine output retains stable status tokens.
+- JSON errors use the same `ReportV1` shape with `version: 1`, empty summary/libraries, and an `error` field.
+- Non-empty `NO_COLOR` takes precedence over `FORCE_COLOR`; otherwise `FORCE_COLOR=0` disables color and another non-empty value enables it.

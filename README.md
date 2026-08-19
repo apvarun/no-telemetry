@@ -138,9 +138,15 @@ Coverage focuses on **popular JS/TS project deps and npm CLIs** (frameworks, mon
 
 Some tools honor a proprietary opt-out **or** `DO_NOT_TRACK` (e.g. Turbo, Railway, Supabase). Alternate signals use OR semantics by default. Entries with `alternatePolicy: "fallback"` use alternates only when the primary key is unset; this models tools such as GitHub CLI where `GH_TELEMETRY` takes precedence. `init` still writes the primary library-specific key plus `DO_NOT_TRACK=1`.
 
+## Scope
+
+Version 0.1 scans one `package.json` in the current directory and detects direct `dependencies` and `devDependencies` only. It does not traverse workspaces or inspect transitive dependencies.
+
+The registry models environment-variable opt-outs. Tools that require config files or CLI state are reported as `unsupported`; `init` does not mutate those settings. The CLI never edits shell profiles, downloads a registry, or makes network requests.
+
 ## Programmatic API
 
-**Stable surface** (semver):
+**Stable, ESM-only surface** (semver; Node 18+):
 
 ```ts
 import { scan, planInit, applyInit, failsCheck, buildReport, REGISTRY } from "no-telemetry";
@@ -188,11 +194,20 @@ Ship-ready instructions for coding agents: [`skills/no-telemetry/SKILL.md`](./sk
 
 ```bash
 pnpm install
-pnpm test
+pnpm run check
+pnpm run test
 pnpm run build
 ```
 
-Zero production dependencies. Node 18+.
+The development toolchain runs on Node 22. The packed CLI and programmatic API are smoke-tested on Node 18, 20, and 22:
+
+```bash
+mkdir -p .artifacts
+pnpm pack --pack-destination .artifacts
+pnpm run test:package -- .artifacts/no-telemetry-0.1.0.tgz --tsc node_modules/.bin/tsc
+```
+
+Zero production dependencies. Runtime support: Node 18+.
 
 ## License
 

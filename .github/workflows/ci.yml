@@ -6,11 +6,8 @@ on:
   pull_request:
 
 jobs:
-  test:
+  quality:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        node: [18, 20, 22]
     steps:
       - uses: actions/checkout@v4
 
@@ -20,7 +17,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node }}
+          node-version: 22.18.0
           cache: pnpm
 
       - name: Install
@@ -35,49 +32,57 @@ jobs:
       - name: Build
         run: pnpm run build
 
-      - name: Publish dry-run (pack)
-        if: matrix.node == 22
-        run: pnpm pack --dry-run
-
       - name: Self check (no telemetry deps expected)
-        if: matrix.node == 22
         run: node dist/cli.mjs check --json=compact
 
       - name: list / why smoke
-        if: matrix.node == 22
         run: |
           node dist/cli.mjs list --json=compact | head -c 200
           echo
           node dist/cli.mjs why next --json=compact
 
-  # Optional: temp project with next+turbo must init → check green
-  fixture-smoke:
+      - name: Publish dry-run
+        env:
+          PNPM_CONFIG_IGNORE_SCRIPTS: "true"
+        run: pnpm pack --dry-run
+
+      - name: Build package artifact
+        env:
+          PNPM_CONFIG_IGNORE_SCRIPTS: "true"
+        run: |
+          mkdir -p .artifacts
+          pnpm pack --pack-destination .artifacts
+
+      - name: Packed package acceptance
+        run: |
+          TARBALL=$(find .artifacts -name '*.tgz' -type f -print -quit)
+          pnpm run test:package -- "$TARBALL" --tsc node_modules/.bin/tsc
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-tarball
+          path: .artifacts/*.tgz
+          if-no-files-found: error
+
+  runtime-smoke:
     runs-on: ubuntu-latest
-    needs: test
+    needs: quality
+    strategy:
+      matrix:
+        node: [18, 20, 22]
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
+      - uses: actions/download-artifact@v4
         with:
-          version: 11.20.0
+          name: package-tarball
+          path: .artifacts
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
-          cache: pnpm
+          node-version: ${{ matrix.node }}
 
-      - name: Install & build
+      - name: Packed runtime smoke
         run: |
-          pnpm install --frozen-lockfile
-          pnpm run build
-
-      - name: Fixture init + check
-        run: |
-          FIX=$(mktemp -d)
-          printf '%s\n' '{"name":"fixture","private":true,"dependencies":{"next":"15","turbo":"2"}}' > "$FIX/package.json"
-          (cd "$FIX" && node "$GITHUB_WORKSPACE/dist/cli.mjs" init -y)
-          (cd "$FIX" && node "$GITHUB_WORKSPACE/dist/cli.mjs" check --json=compact)
-          test -f "$FIX/.env"
-          grep -q 'NEXT_TELEMETRY_DISABLED=1' "$FIX/.env"
-          grep -q 'TURBO_TELEMETRY_DISABLED=1' "$FIX/.env"
-          grep -q 'DO_NOT_TRACK=1' "$FIX/.env"
+          TARBALL=$(find .artifacts -name '*.tgz' -type f -print -quit)
+          node scripts/package-smoke.mjs "$TARBALL"
