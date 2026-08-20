@@ -1,0 +1,143 @@
+name: Publish
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      package-version: ${{ steps.version.outputs.package_version }}
+      should-publish: ${{ steps.version.outputs.should_publish }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Check package version
+        id: version
+        run: |
+          PACKAGE_NAME=$(node -p "JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).name")
+          PACKAGE_VERSION=$(node -p "JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).version")
+          PACKAGE_SPEC="$PACKAGE_NAME@$PACKAGE_VERSION"
+
+          echo "package_version=$PACKAGE_VERSION" >> "$GITHUB_OUTPUT"
+
+          if [[ "$PACKAGE_VERSION" == *-* ]]; then
+            echo "::error::Prerelease version $PACKAGE_VERSION requires an explicit npm dist-tag"
+            exit 1
+          fi
+
+          cd "$RUNNER_TEMP"
+          set +e
+          VIEW_OUTPUT=$(npm view "$PACKAGE_SPEC" version --json 2>&1)
+          VIEW_STATUS=$?
+          set -e
+
+          if [[ $VIEW_STATUS -eq 0 ]]; then
+            echo "$PACKAGE_SPEC is already published"
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+          elif grep -q "E404" <<< "$VIEW_OUTPUT"; then
+            echo "$PACKAGE_SPEC is not published"
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "$VIEW_OUTPUT"
+            exit "$VIEW_STATUS"
+          fi
+
+  publish:
+    needs: check-version
+    if: ${{ needs.check-version.outputs.should-publish == 'true' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/no-telemetry
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.20.0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Check
+        run: pnpm run check
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Pack
+        env:
+          PNPM_CONFIG_IGNORE_SCRIPTS: "true"
+        run: |
+          mkdir -p artifacts
+          pnpm pack --pack-destination artifacts
+
+      - name: Test package
+        run: |
+          TARBALL=$(find artifacts -name '*.tgz' -type f -print -quit)
+          pnpm run test:package "$TARBALL" --tsc node_modules/.bin/tsc
+
+      - name: Publish to npm
+        run: |
+          TARBALL=$(find artifacts -name '*.tgz' -type f -print -quit)
+          TARBALL_PATH="$GITHUB_WORKSPACE/$TARBALL"
+          cd "$RUNNER_TEMP"
+          npm publish "$TARBALL_PATH" --access public
+
+  release:
+    needs: [check-version, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_VERSION: ${{ needs.check-version.outputs.package-version }}
+        run: |
+          TAG="v$PACKAGE_VERSION"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "GitHub release $TAG already exists"
+            exit 0
+          fi
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            git fetch --no-tags origin "refs/tags/$TAG:refs/tags/$TAG"
+            TAG_COMMIT=$(git rev-list -n 1 "$TAG")
+            if [[ "$TAG_COMMIT" != "$GITHUB_SHA" ]]; then
+              echo "::error::Tag $TAG points to $TAG_COMMIT instead of $GITHUB_SHA"
+              exit 1
+            fi
+          fi
+
+          gh release create "$TAG" --target "$GITHUB_SHA" --title "$TAG" --generate-notes

@@ -79,9 +79,12 @@ CLI human table formatting is **not** a stable contract - use `--json` / `--json
 
 Machine status tokens: `disabled` | `enabled` | `not_applicable` | `not_found` | `unsupported`.
 
-## Release checklist (maintainers)
+## Releases
 
-- [ ] `CHANGELOG.md` updated
-- [ ] `pnpm test` + `pnpm run check` + `pnpm run build`
-- [ ] `npm pack --dry-run` includes `dist/` and `skills/`
-- [ ] Version bump (`bumpp` or manual)
+New versions are published from `main` through `.github/workflows/publish.yml` using npm trusted publishing. Merges without a version bump are skipped.
+
+- [ ] Update `CHANGELOG.md` and `package.json` with the new version.
+- [ ] Run `pnpm run check`, `pnpm test`, and `pnpm run build`.
+- [ ] Open a pull request and wait for CI to pass.
+- [ ] Merge to `main`; wait for the publish workflow to publish the package and create the matching GitHub tag and release.
+- [ ] Verify the version on npm and the GitHub release.
