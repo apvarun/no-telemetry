@@ -28,10 +28,6 @@
       "types": "./dist/index.d.mts",
       "import": "./dist/index.mjs"
     },
-    "./cli": {
-      "types": "./dist/cli.d.mts",
-      "import": "./dist/cli.mjs"
-    },
     "./package.json": "./package.json"
   },
   "publishConfig": {

@@ -20,6 +20,7 @@ export {
   isInstalled,
   failsCheck,
   filterResults,
+  entryMatches,
   matchesIgnore,
   resolveEnv,
   resolveEnvBinding,

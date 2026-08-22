@@ -47,14 +47,14 @@ The first `--yes` accepts the `npx` install. The `-y` after `init` accepts the f
 
 ### `init`
 
-Reads `package.json` (`dependencies` + `devDependencies`), matches them against the built-in registry, and appends missing opt-out vars to the write target (default `.env`).
+Reads `package.json` (`dependencies` + `devDependencies`), matches them against the built-in registry, and adds missing opt-out vars to the write target (default `.env`).
 
 | Flag              | Meaning                                                              |
 | ----------------- | -------------------------------------------------------------------- |
 | `--yes` / `-y`    | Skip confirmation (required when non-TTY or `CI=true`)               |
 | `--dry-run`       | Show what would be written, don't write                              |
 | `--json`          | Machine-readable report (`version: 1`)                               |
-| `--target <path>` | `.env` (default), `.env.local`, `.env.example`, or `stdout`          |
+| `--target <path>` | Any env-file path, or `stdout` (default: `.env`)                     |
 | `--example`       | Shorthand for `--target .env.example` (commit-safe opt-out template) |
 
 `init` does not accept `--only`, `--ignore`, or `--all` (those are doctor/check only).
@@ -64,7 +64,7 @@ Reads `package.json` (`dependencies` + `devDependencies`), matches them against 
 - Fills empty `KEY=` placeholders in place
 - Never overwrites a different value (warns instead)
 - Always includes `DO_NOT_TRACK=1`
-- Writes a versioned comment header (`# no-telemetry <version> - <ISO timestamp>`)
+- Keeps generated vars in one marker-delimited section with a versioned creation header
 - `stdout` mode: pure `KEY=VAL` lines on stdout; diagnostics on stderr
 - With `--target stdout --json`, dotenv lines stay on stdout and the JSON report goes to stderr
 - `--example` / `.env.example`: same keys as `.env`, safe to commit (no secrets)
@@ -73,14 +73,15 @@ Reads `package.json` (`dependencies` + `devDependencies`), matches them against 
 
 Prints a per-library table. Installed libraries matter for the summary. Human table hides `not found` by default (`--all` to show). Always exits 0.
 
-| Flag              | Meaning                               |
-| ----------------- | ------------------------------------- |
-| `--json`          | Full machine-readable report          |
-| `--only <filter>` | `installed` or `failing`              |
-| `--ignore <id>`   | Omit a library; repeatable            |
-| `--all`           | Include not-found rows in human table |
+| Flag               | Meaning                                          |
+| ------------------ | ------------------------------------------------ |
+| `--json`           | Full machine-readable report                     |
+| `--only <filter>`  | `installed` or `failing`                         |
+| `--ignore <value>` | Omit by id, display name, or package; repeatable |
+| `--all`            | Include not-found rows in human table            |
 
 `doctor` / `check` do not accept `--yes`, `--dry-run`, or `--target`.
+`--only` filters `libraries[]` in JSON; `summary` retains the full post-`--ignore` policy counts.
 
 ### `check`
 

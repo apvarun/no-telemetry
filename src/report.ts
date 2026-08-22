@@ -112,9 +112,14 @@ export function planToActions(plan: InitPlanItem[]): ReportAction[] {
 export function buildReport(
   cwd: string,
   results: LibraryResult[],
-  options: { actions?: ReportAction[]; ignored?: number; error?: string } = {},
+  options: {
+    actions?: ReportAction[];
+    ignored?: number;
+    error?: string;
+    summaryResults?: LibraryResult[];
+  } = {},
 ): ReportV1 {
-  const summary = summarize(results);
+  const summary = summarize(options.summaryResults ?? results);
   if (options.ignored !== undefined) summary.ignored = options.ignored;
   const report: ReportV1 = {
     version: 1,

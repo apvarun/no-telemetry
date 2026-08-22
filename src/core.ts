@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { DO_NOT_TRACK, REGISTRY, type EnvOptOut, type RegistryEntry } from "./registry.ts";
 
 /** Machine-stable status tokens (CLI maps these to display labels). */
@@ -25,8 +25,8 @@ export type LibraryResult = {
   env: EnvBinding[];
 };
 
-/** Init write targets. Default `.env`. */
-export type InitTarget = ".env" | ".env.local" | ".env.example" | "stdout";
+/** Init write target path, or `stdout`. Default `.env`. */
+export type InitTarget = string;
 
 export type ScanOptions = {
   /**
@@ -67,10 +67,16 @@ export function failsCheck(result: LibraryResult): boolean {
 export function readDeps(cwd: string): Set<string> {
   const path = join(cwd, "package.json");
   if (!existsSync(path)) throw new Error(`No package.json in ${cwd}`);
-  const pkg = JSON.parse(readFileSync(path, "utf8")) as {
+  let pkg: {
     dependencies?: Record<string, string>;
     devDependencies?: Record<string, string>;
   };
+  try {
+    pkg = JSON.parse(readFileSync(path, "utf8"));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid package.json at ${path}: ${message}`);
+  }
   return new Set([
     ...Object.keys(pkg.dependencies ?? {}),
     ...Object.keys(pkg.devDependencies ?? {}),
@@ -134,7 +140,7 @@ function stripEnvComment(value: string): string {
 
 /** Load a single env file relative to cwd. Missing file → {}. */
 export function loadEnvFile(cwd: string, fileName = ".env"): Record<string, string> {
-  const path = join(cwd, fileName);
+  const path = resolve(cwd, fileName);
   if (!existsSync(path)) return {};
   return parseEnvFile(readFileSync(path, "utf8"));
 }
@@ -158,7 +164,7 @@ export function loadProjectEnv(
 export function resolveEnvBinding(
   key: string,
   fileEnv: Record<string, string>,
-  processEnv: NodeJS.ProcessEnv = process.env,
+  processEnv: Record<string, string | undefined> = process.env,
   want?: string,
 ): EnvBinding {
   if (processEnv[key] !== undefined) {
@@ -174,7 +180,7 @@ export function resolveEnvBinding(
 export function resolveEnv(
   key: string,
   fileEnv: Record<string, string>,
-  processEnv: NodeJS.ProcessEnv = process.env,
+  processEnv: Record<string, string | undefined> = process.env,
 ): string | undefined {
   return resolveEnvBinding(key, fileEnv, processEnv).actual;
 }
@@ -193,7 +199,7 @@ export function evaluate(
   entry: RegistryEntry,
   deps: Set<string>,
   fileEnv: Record<string, string>,
-  processEnv: NodeJS.ProcessEnv = process.env,
+  processEnv: Record<string, string | undefined> = process.env,
 ): LibraryResult {
   if (!isInstalled(entry, deps)) {
     return result(entry, false, "not_found", "(package not installed)", []);
@@ -254,7 +260,7 @@ export function matchesOptOut(env: EnvOptOut, actual: string | undefined): boole
 
 export function scan(
   cwd: string,
-  processEnv: NodeJS.ProcessEnv = process.env,
+  processEnv: Record<string, string | undefined> = process.env,
   options: ScanOptions = {},
 ): LibraryResult[] {
   const deps = readDeps(cwd);
@@ -308,6 +314,9 @@ export function initCommentBlock(version = "0.0.0", when = new Date()): string {
   return `# no-telemetry ${version} - ${when.toISOString()}`;
 }
 
+const INIT_START = "# no-telemetry:start";
+const INIT_END = "# no-telemetry:end";
+
 /** Fill empty placeholders and append missing keys. Non-empty values are never overwritten. */
 export function applyInit(
   cwd: string,
@@ -329,18 +338,30 @@ export function applyInit(
     return { added: toAdd.length, filled: toFill.length, already, conflict, lines, path: null };
   }
 
-  const path = join(cwd, target);
+  const path = resolve(cwd, target);
   let content = existsSync(path) ? readFileSync(path, "utf8") : "";
   content = fillPlaceholders(content, toFill);
-  if (content && !content.endsWith("\n")) content += "\n";
-
   const addLines = toAdd.map((p) => `${p.env.key}=${p.env.value}`);
-  const block =
-    addLines.length > 0
-      ? ["", initCommentBlock(options.version ?? "0.0.0"), ...addLines, ""].join("\n")
-      : "";
+  if (addLines.length > 0) {
+    const newline = content.includes("\r\n") ? "\r\n" : "\n";
+    const start = content.indexOf(INIT_START);
+    const end = content.indexOf(INIT_END);
+    if (start !== -1 && end > start) {
+      content = `${content.slice(0, end)}${addLines.join(newline)}${newline}${content.slice(end)}`;
+    } else {
+      if (content && !content.endsWith("\n")) content += newline;
+      if (content) content += newline;
+      content += [
+        INIT_START,
+        initCommentBlock(options.version ?? "0.0.0"),
+        ...addLines,
+        INIT_END,
+        "",
+      ].join(newline);
+    }
+  }
 
-  writeFileSync(path, content + block, "utf8");
+  writeFileSync(path, content, "utf8");
   return { added: toAdd.length, filled: toFill.length, already, conflict, lines, path };
 }
 
@@ -363,12 +384,21 @@ function fillPlaceholders(
   return lines.join(newline);
 }
 
-/** Match --ignore ids against registry entry id or any package name. */
+/** Match a registry entry by id, display name, package, or scoped package pattern. */
+export function entryMatches(entry: RegistryEntry, value: string): boolean {
+  const needle = value.toLowerCase();
+  if (entry.id.toLowerCase() === needle || entry.name.toLowerCase() === needle) return true;
+  return entry.packages.some((packageName) => {
+    const pattern = packageName.toLowerCase();
+    if (!pattern.endsWith("/*")) return pattern === needle;
+    const scope = pattern.slice(0, -2);
+    return needle === scope || needle.startsWith(`${scope}/`);
+  });
+}
+
+/** Match --ignore values against registry entry ids, names, or packages. */
 export function matchesIgnore(entry: RegistryEntry, ignoreIds: string[]): boolean {
-  if (ignoreIds.length === 0) return false;
-  const set = new Set(ignoreIds);
-  if (set.has(entry.id)) return true;
-  return entry.packages.some((p) => set.has(p) || set.has(p.replace(/\/\*$/, "")));
+  return ignoreIds.some((value) => entryMatches(entry, value));
 }
 
 export type FilterOptions = {

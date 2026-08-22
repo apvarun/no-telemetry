@@ -66,6 +66,8 @@ Top-level shape (`version: 1`) for doctor/check/init:
 - `libraries[]`: `id`, `status`, `failsCheck`, `env[]` with `source` (`process-env` | `env-file` | `unset`)
 - `actions[]` on `init` (adds / placeholder fills / conflicts)
 
+`--only` filters `libraries[]`; `summary` always describes the full post-`--ignore` policy set.
+
 `list` returns `{ version: 1, libraries: [...] }` (full registry).
 `why` returns a single-entry object with `id`, `env`, `docs`, `notes`, …
 
