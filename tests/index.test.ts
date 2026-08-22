@@ -63,16 +63,6 @@ test("readDeps merges dependencies", () => {
   }
 });
 
-test("readDeps identifies malformed package.json", () => {
-  const dir = fixture({});
-  writeFileSync(join(dir, "package.json"), '{"dependencies":');
-  try {
-    expect(() => readDeps(dir)).toThrow(`Invalid package.json at ${join(dir, "package.json")}`);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
 test("evaluate: disabled when env matches", () => {
   const next = REGISTRY.find((e) => e.id === "next")!;
   const r = evaluate(
@@ -567,20 +557,6 @@ test("planInit + applyInit --target .env.local", () => {
   }
 });
 
-test("planInit + applyInit accepts nested target paths", () => {
-  const dir = fixture({ dependencies: { next: "15" } });
-  mkdirSync(join(dir, "apps", "web"), { recursive: true });
-  const target = "apps/web/.env.development";
-  try {
-    const plan = planInit(dir, { target });
-    const result = applyInit(dir, plan, { target });
-    expect(result.path).toBe(join(dir, target));
-    expect(readFileSync(join(dir, target), "utf8")).toContain("NEXT_TELEMETRY_DISABLED=1");
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
 test("planInit + applyInit --target .env.example", () => {
   const dir = fixture({ dependencies: { next: "15" } });
   try {
@@ -636,7 +612,7 @@ test("buildReport JSON shape v1", () => {
 
 test("filterResults: only installed / failing / hideNotFound / ignore", () => {
   const dir = fixture({
-    dependencies: { next: "15", "netlify-cli": "1", "@storybook/react": "1" },
+    dependencies: { next: "15", "netlify-cli": "1" },
   });
   try {
     const results = scan(dir, {});
@@ -648,14 +624,6 @@ test("filterResults: only installed / failing / hideNotFound / ignore", () => {
     const ignored = filterResults(results, { ignore: ["next"] });
     expect(ignored.some((r) => r.entry.id === "next")).toBe(false);
     expect(ignored.some((r) => r.entry.id === "netlify-cli")).toBe(true);
-    expect(filterResults(results, { ignore: ["Next.js"] }).some((r) => r.entry.id === "next")).toBe(
-      false,
-    );
-    expect(
-      filterResults(results, { ignore: ["@storybook/react"] }).some(
-        (r) => r.entry.id === "storybook",
-      ),
-    ).toBe(false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

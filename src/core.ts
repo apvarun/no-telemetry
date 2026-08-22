@@ -71,8 +71,9 @@ export function readDeps(cwd: string): Set<string> {
     dependencies?: Record<string, string>;
     devDependencies?: Record<string, string>;
   };
+  const content = readFileSync(path, "utf8");
   try {
-    pkg = JSON.parse(readFileSync(path, "utf8"));
+    pkg = JSON.parse(content);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Invalid package.json at ${path}: ${message}`);
