@@ -64,7 +64,7 @@ Top-level shape (`version: 1`) for doctor/check/init:
 
 - `summary.enabled` / `summary.disabled` / `summary.applicable`
 - `libraries[]`: `id`, `status`, `failsCheck`, `env[]` with `source` (`process-env` | `env-file` | `unset`)
-- `actions[]` on `init` (adds / conflicts)
+- `actions[]` on `init` (adds / placeholder fills / conflicts)
 
 `list` returns `{ version: 1, libraries: [...] }` (full registry).
 `why` returns a single-entry object with `id`, `env`, `docs`, `notes`, …
@@ -73,7 +73,7 @@ Status tokens: `disabled` | `enabled` | `not_applicable` | `not_found` | `unsupp
 
 `check` fails when any non-ignored library has `failsCheck: true` (status `enabled`).
 
-Alternate signals use OR semantics by default. If a `why` / `list` row reports `alternatePolicy: "fallback"`, its `alsoSatisfiedBy` values apply only while the primary env key is unset.
+Bindings may report multiple `accepts` values or `"non-empty"`. Alternate signals use OR semantics by default. If a `why` / `list` row reports `alternatePolicy: "fallback"`, its `alsoSatisfiedBy` values apply only while the primary env key is unset.
 
 ## Rules
 
@@ -89,7 +89,7 @@ Alternate signals use OR semantics by default. If a `why` / `list` row reports `
 ```ts
 import { scan, planInit, applyInit, failsCheck, buildReport, REGISTRY } from "no-telemetry";
 
-const results = scan(process.cwd(), {});
+const results = scan(process.cwd());
 if (results.some(failsCheck)) {
   const plan = planInit(process.cwd());
   applyInit(process.cwd(), plan);

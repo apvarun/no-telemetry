@@ -50,6 +50,7 @@ export type ApplyInitOptions = {
 
 export type ApplyInitResult = {
   added: number;
+  filled: number;
   already: number;
   conflict: number;
   /** KEY=VALUE lines that were or would be written (including dry stdout). */
@@ -98,13 +99,37 @@ export function parseEnvFile(content: string): Record<string, string> {
     const i = t.indexOf("=");
     if (i === -1) continue;
     const key = t.slice(0, i).trim();
-    let val = t.slice(i + 1).trim();
+    let val = stripEnvComment(t.slice(i + 1)).trim();
     if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
       val = val.slice(1, -1);
     }
     out[key] = val;
   }
   return out;
+}
+
+/** Strip a dotenv-style inline comment while preserving # inside quotes. */
+function stripEnvComment(value: string): string {
+  let quote: '"' | "'" | undefined;
+  let escaped = false;
+  for (let i = 0; i < value.length; i++) {
+    const char = value[i]!;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\" && quote === '"') {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) quote = undefined;
+      continue;
+    }
+    if (char === '"' || char === "'") quote = char;
+    else if (char === "#") return value.slice(0, i);
+  }
+  return value;
 }
 
 /** Load a single env file relative to cwd. Missing file → {}. */
@@ -199,14 +224,17 @@ export function evaluate(
       const signals = [entry.env, ...(entry.alsoSatisfiedBy ?? [])];
       const env = signals.map((s) => resolveEnvBinding(s.key, fileEnv, processEnv, s.value));
       const primary = env[0]!;
-      const primaryHit = primary.actual === entry.env.value ? entry.env : undefined;
+      const primaryHit = matchesOptOut(entry.env, primary.actual) ? 0 : undefined;
       const canUseAlternates = entry.alternatePolicy !== "fallback" || primary.actual === undefined;
       const alternateHit = canUseAlternates
-        ? signals.slice(1).find((s, i) => env[i + 1]!.actual === s.value)
+        ? signals.slice(1).findIndex((s, i) => matchesOptOut(s, env[i + 1]!.actual))
         : undefined;
-      const hit = primaryHit ?? alternateHit;
-      if (hit) {
-        return result(entry, true, "disabled", `${hit.key}=${hit.value}`, env);
+      const hitIndex =
+        primaryHit ??
+        (alternateHit !== undefined && alternateHit >= 0 ? alternateHit + 1 : undefined);
+      if (hitIndex !== undefined) {
+        const hit = env[hitIndex]!;
+        return result(entry, true, "disabled", `${hit.key}=${hit.actual}`, env);
       }
       const detail =
         primary.actual === undefined
@@ -215,6 +243,13 @@ export function evaluate(
       return result(entry, true, "enabled", detail, env);
     }
   }
+}
+
+/** Whether an observed value satisfies an opt-out binding's documented semantics. */
+export function matchesOptOut(env: EnvOptOut, actual: string | undefined): boolean {
+  if (actual === undefined) return false;
+  if (env.accepts === "non-empty") return actual.length > 0;
+  return (env.accepts ?? [env.value]).includes(actual);
 }
 
 export function scan(
@@ -229,7 +264,8 @@ export function scan(
 
 export type InitPlanItem =
   | { kind: "add"; env: EnvOptOut }
-  | { kind: "ok"; env: EnvOptOut }
+  | { kind: "fill"; env: EnvOptOut; existing: "" }
+  | { kind: "ok"; env: EnvOptOut; existing: string }
   | { kind: "conflict"; env: EnvOptOut; existing: string };
 
 function targetFileName(target: InitTarget): string | null {
@@ -260,7 +296,8 @@ export function planInit(cwd: string, options: PlanInitOptions = {}): InitPlanIt
     seen.add(env.key);
     const existing = fileEnv[env.key];
     if (existing === undefined) items.push({ kind: "add", env });
-    else if (existing === env.value) items.push({ kind: "ok", env });
+    else if (existing === "") items.push({ kind: "fill", env, existing });
+    else if (matchesOptOut(env, existing)) items.push({ kind: "ok", env, existing });
     else items.push({ kind: "conflict", env, existing });
   }
   return items;
@@ -271,7 +308,7 @@ export function initCommentBlock(version = "0.0.0", when = new Date()): string {
   return `# no-telemetry ${version} - ${when.toISOString()}`;
 }
 
-/** Append missing keys to target file; never overwrite. stdout returns lines only. */
+/** Fill empty placeholders and append missing keys. Non-empty values are never overwritten. */
 export function applyInit(
   cwd: string,
   plan: InitPlanItem[],
@@ -279,26 +316,51 @@ export function applyInit(
 ): ApplyInitResult {
   const target = options.target ?? ".env";
   const toAdd = plan.filter((p) => p.kind === "add");
+  const toFill = plan.filter((p) => p.kind === "fill");
   const already = plan.filter((p) => p.kind === "ok").length;
   const conflict = plan.filter((p) => p.kind === "conflict").length;
-  const lines = toAdd.map((p) => `${p.env.key}=${p.env.value}`);
+  const lines = [...toFill, ...toAdd].map((p) => `${p.env.key}=${p.env.value}`);
 
-  if (toAdd.length === 0) {
-    return { added: 0, already, conflict, lines: [], path: null };
+  if (toAdd.length === 0 && toFill.length === 0) {
+    return { added: 0, filled: 0, already, conflict, lines: [], path: null };
   }
 
   if (target === "stdout") {
-    return { added: toAdd.length, already, conflict, lines, path: null };
+    return { added: toAdd.length, filled: toFill.length, already, conflict, lines, path: null };
   }
 
   const path = join(cwd, target);
   let content = existsSync(path) ? readFileSync(path, "utf8") : "";
+  content = fillPlaceholders(content, toFill);
   if (content && !content.endsWith("\n")) content += "\n";
 
-  const block = ["", initCommentBlock(options.version ?? "0.0.0"), ...lines, ""].join("\n");
+  const addLines = toAdd.map((p) => `${p.env.key}=${p.env.value}`);
+  const block =
+    addLines.length > 0
+      ? ["", initCommentBlock(options.version ?? "0.0.0"), ...addLines, ""].join("\n")
+      : "";
 
   writeFileSync(path, content + block, "utf8");
-  return { added: toAdd.length, already, conflict, lines, path };
+  return { added: toAdd.length, filled: toFill.length, already, conflict, lines, path };
+}
+
+function fillPlaceholders(
+  content: string,
+  fills: Extract<InitPlanItem, { kind: "fill" }>[],
+): string {
+  if (fills.length === 0) return content;
+  const newline = content.includes("\r\n") ? "\r\n" : "\n";
+  const lines = content.split(/\r?\n/);
+  for (const fill of fills) {
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const parsed = parseEnvFile(lines[i]!);
+      if (Object.hasOwn(parsed, fill.env.key) && parsed[fill.env.key] === "") {
+        lines[i] = `${fill.env.key}=${fill.env.value}`;
+        break;
+      }
+    }
+  }
+  return lines.join(newline);
 }
 
 /** Match --ignore ids against registry entry id or any package name. */

@@ -61,6 +61,7 @@ Reads `package.json` (`dependencies` + `devDependencies`), matches them against 
 
 - Creates the target file if needed (not for `stdout`)
 - Skips vars already set correctly
+- Fills empty `KEY=` placeholders in place
 - Never overwrites a different value (warns instead)
 - Always includes `DO_NOT_TRACK=1`
 - Writes a versioned comment header (`# no-telemetry <version> - <ISO timestamp>`)
@@ -184,7 +185,7 @@ Registry entries are a discriminated union on `kind`:
 | `opt-in`      | Off by default; `enableWhen` values mean ON   |
 | `unsupported` | No env-var opt-out (config/CLI only)          |
 
-`opt-out` may include `alsoSatisfiedBy` for extra env bindings and `alternatePolicy: "fallback"` when those bindings apply only while the primary key is unset. The default policy is `"or"`.
+`opt-out` bindings may include `accepts` for multiple accepted values or `"non-empty"` semantics. Entries may also include `alsoSatisfiedBy` for extra env bindings and `alternatePolicy: "fallback"` when those bindings apply only while the primary key is unset. The default policy is `"or"`.
 
 ## Development
 

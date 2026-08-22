@@ -40,9 +40,13 @@ function installPackage(entry: (typeof REGISTRY)[number]): string {
 }
 
 test("parseEnvFile", () => {
-  const env = parseEnvFile(`# c\nFOO=1\nBAR="x y"\n`);
+  const env = parseEnvFile(
+    `# c\nFOO=1 # policy\nBAR="x # y" # quoted hash\nBAZ='z # q'\nEMPTY= # placeholder\n`,
+  );
   expect(env.FOO).toBe("1");
-  expect(env.BAR).toBe("x y");
+  expect(env.BAR).toBe("x # y");
+  expect(env.BAZ).toBe("z # q");
+  expect(env.EMPTY).toBe("");
 });
 
 test("readDeps merges dependencies", () => {
@@ -124,6 +128,31 @@ test("evaluate: fallback alternates respect GitHub CLI primary precedence", () =
   const viaFallback = evaluate(github, new Set(["gh"]), {}, { DO_NOT_TRACK: "true" });
   expect(viaFallback.status).toBe("disabled");
   expect(failsCheck(viaFallback)).toBe(false);
+  expect(github.alsoSatisfiedBy).toHaveLength(1);
+});
+
+test("evaluate: registry-specific accepted opt-out values", () => {
+  const cases = [
+    ["claude-code", "@anthropic-ai/claude-code", "DISABLE_TELEMETRY", ["1", "true", "custom"]],
+    ["flyway", "flyway-cli", "REDGATE_DISABLE_TELEMETRY", ["true", "1", "custom"]],
+    ["hookdeck", "hookdeck-cli", "HOOKDECK_CLI_TELEMETRY_DISABLED", ["1", "true"]],
+  ] as const;
+
+  for (const [id, pkg, key, accepted] of cases) {
+    const entry = REGISTRY.find((e) => e.id === id)!;
+    for (const value of accepted) {
+      const result = evaluate(entry, new Set([pkg]), {}, { [key]: value });
+      expect(result.status).toBe("disabled");
+      expect(result.detail).toBe(`${key}=${value}`);
+    }
+    expect(evaluate(entry, new Set([pkg]), {}, { [key]: "" }).status).toBe("enabled");
+  }
+
+  const hookdeck = REGISTRY.find((e) => e.id === "hookdeck")!;
+  expect(
+    evaluate(hookdeck, new Set(["hookdeck-cli"]), {}, { HOOKDECK_CLI_TELEMETRY_DISABLED: "yes" })
+      .status,
+  ).toBe("enabled");
 });
 
 test("evaluate: default alternate policy retains OR semantics", () => {
@@ -273,6 +302,51 @@ test("planInit warns on conflict without overwriting", () => {
   }
 });
 
+test("planInit fills empty placeholders in place", () => {
+  const dir = fixture(
+    { dependencies: { next: "15" } },
+    "# template\nDO_NOT_TRACK=\nNEXT_TELEMETRY_DISABLED= # required\n",
+  );
+  try {
+    const plan = planInit(dir);
+    expect(plan.filter((p) => p.kind === "fill")).toHaveLength(2);
+    const result = applyInit(dir, plan);
+    expect(result.added).toBe(0);
+    expect(result.filled).toBe(2);
+    expect(result.conflict).toBe(0);
+
+    const body = readFileSync(join(dir, ".env"), "utf8");
+    expect(body.match(/^DO_NOT_TRACK=/gm)).toHaveLength(1);
+    expect(body.match(/^NEXT_TELEMETRY_DISABLED=/gm)).toHaveLength(1);
+    expect(body).toContain("DO_NOT_TRACK=1");
+    expect(body).toContain("NEXT_TELEMETRY_DISABLED=1");
+
+    const second = planInit(dir);
+    expect(second.every((p) => p.kind === "ok")).toBe(true);
+    expect(applyInit(dir, second).filled).toBe(0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("planInit accepts documented alternate values without rewriting", () => {
+  const dir = fixture(
+    { dependencies: { "hookdeck-cli": "1" } },
+    "DO_NOT_TRACK=true\nHOOKDECK_CLI_TELEMETRY_DISABLED=true\n",
+  );
+  try {
+    const plan = planInit(dir);
+    expect(plan.every((p) => p.kind === "ok")).toBe(true);
+    expect(planToActions(plan)).toContainEqual({
+      type: "ok",
+      key: "HOOKDECK_CLI_TELEMETRY_DISABLED",
+      value: "true",
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("planInit skips opt-in and unsupported entries", () => {
   const dir = fixture({
     dependencies: { "better-auth": "1", "netlify-cli": "17", next: "15" },
@@ -364,7 +438,7 @@ test("golden: every registry entry has correct status matrix", () => {
     expect(disabled.status).toBe("disabled");
     expect(failsCheck(disabled)).toBe(false);
 
-    const wrong = evaluate(entry, depsInstalled, {}, { [entry.env.key]: "__WRONG__" });
+    const wrong = evaluate(entry, depsInstalled, {}, { [entry.env.key]: "" });
     expect(wrong.status).toBe("enabled");
     expect(failsCheck(wrong)).toBe(true);
 

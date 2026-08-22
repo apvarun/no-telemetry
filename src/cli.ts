@@ -8,6 +8,7 @@ import {
   applyInit,
   failsCheck,
   filterResults,
+  parseEnvFile,
   planInit,
   scan,
   type InitPlanItem,
@@ -145,8 +146,7 @@ function entryPublic(e: RegistryEntry) {
     env:
       e.kind === "opt-out" || e.kind === "opt-in"
         ? {
-            key: e.env.key,
-            value: e.env.value,
+            ...e.env,
             ...(e.kind === "opt-out" && e.alsoSatisfiedBy?.length
               ? {
                   alsoSatisfiedBy: e.alsoSatisfiedBy,
@@ -434,12 +434,17 @@ function emitInitSuccess(
   message: string,
   opts: { dotenvLines?: string[] } = {},
 ): void {
-  const report = buildReport(cwd, scan(cwd, {}), {
-    actions: [...actions, { type: "message", message }],
-  });
   for (const line of opts.dotenvLines ?? []) console.log(line);
 
   if (flags.json) {
+    const processEnv =
+      flags.target === "stdout"
+        ? { ...process.env, ...parseEnvFile((opts.dotenvLines ?? []).join("\n")) }
+        : process.env;
+    const envFiles = flags.target === "stdout" ? [] : [flags.target];
+    const report = buildReport(cwd, scan(cwd, processEnv, { envFiles }), {
+      actions: [...actions, { type: "message", message }],
+    });
     // KEY=VAL on stdout for --target stdout; keep JSON off that stream when lines exist.
     emitJson(report, flags, (opts.dotenvLines?.length ?? 0) > 0 ? "stderr" : "stdout");
     return;
@@ -452,12 +457,14 @@ function printInitPlan(
   out: (...args: unknown[]) => void,
   targetLabel: string,
   adds: Extract<InitPlanItem, { kind: "add" }>[],
+  fills: Extract<InitPlanItem, { kind: "fill" }>[],
   oks: Extract<InitPlanItem, { kind: "ok" }>[],
   conflicts: Extract<InitPlanItem, { kind: "conflict" }>[],
 ): void {
   out(`Will write to ${targetLabel}:\n`);
   for (const p of adds) out(c.green(`  + ${p.env.key}=${p.env.value}`));
-  for (const p of oks) out(c.dim(`  · ${p.env.key}=${p.env.value} (already set)`));
+  for (const p of fills) out(c.green(`  ~ ${p.env.key}= → ${p.env.value}`));
+  for (const p of oks) out(c.dim(`  · ${p.env.key}=${p.existing} (already set)`));
   for (const p of conflicts) {
     out(c.red(`  ! ${p.env.key} conflict: have "${p.existing}", want "${p.env.value}" (skipped)`));
   }
@@ -473,23 +480,24 @@ async function init(cwd: string, flags: CliFlags): Promise<number> {
   }
 
   const adds = plan.filter((p) => p.kind === "add");
+  const fills = plan.filter((p) => p.kind === "fill");
   const oks = plan.filter((p) => p.kind === "ok");
   const conflicts = plan.filter((p) => p.kind === "conflict");
   const actions = planToActions(plan);
   const targetLabel = flags.target === "stdout" ? "stdout" : flags.target;
   const human = humanOut(flags);
 
-  if (adds.length === 0 && conflicts.length === 0) {
+  if (adds.length === 0 && fills.length === 0 && conflicts.length === 0) {
     if (flags.json) {
       emitInitSuccess(cwd, flags, actions, "Nothing to do - all known opt-outs already set.");
     } else {
       human("Nothing to do - all known opt-outs already set.");
-      for (const p of oks) human(c.dim(`  ${p.env.key}=${p.env.value}`));
+      for (const p of oks) human(c.dim(`  ${p.env.key}=${p.existing}`));
     }
     return EXIT_OK;
   }
 
-  if (!flags.json) printInitPlan(human, targetLabel, adds, oks, conflicts);
+  if (!flags.json) printInitPlan(human, targetLabel, adds, fills, oks, conflicts);
 
   if (flags.dryRun) {
     const dotenvLines =
@@ -518,7 +526,7 @@ async function init(cwd: string, flags: CliFlags): Promise<number> {
 
   const result = applyInit(cwd, plan, { target: flags.target, version: packageVersion() });
   const verb = flags.target === "stdout" ? "emitted on stdout" : "added";
-  const message = `${result.added} vars ${verb}, ${result.already} already set, ${result.conflict} skipped (conflict).`;
+  const message = `${result.added} vars ${verb}, ${result.filled} placeholders filled, ${result.already} already set, ${result.conflict} skipped (conflict).`;
   emitInitSuccess(cwd, flags, actions, message, {
     dotenvLines: flags.target === "stdout" ? result.lines : undefined,
   });

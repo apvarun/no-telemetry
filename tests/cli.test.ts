@@ -118,6 +118,7 @@ test("cli init -y --json writes .env", () => {
     expect(r.status).toBe(0);
     const json = JSON.parse(r.stdout);
     expect(json.version).toBe(1);
+    expect(json.summary.enabled).toBe(0);
     expect(json.actions.some((a: { type: string; key?: string }) => a.type === "add")).toBe(true);
     const body = readFileSync(join(dir, ".env"), "utf8");
     expect(body).toContain("NEXT_TELEMETRY_DISABLED=1");
@@ -125,6 +126,61 @@ test("cli init -y --json writes .env", () => {
 
     const check = run(["check", "--json"], { cwd: dir, env: { ...process.env, CI: "" } });
     expect(check.status).toBe(0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("cli init --json honors process env over a conflicting target value", () => {
+  const dir = fixture({ dependencies: { next: "15" } }, "NEXT_TELEMETRY_DISABLED=0\n");
+  try {
+    const r = run(["init", "-y", "--json"], {
+      cwd: dir,
+      env: { ...process.env, CI: "true", NEXT_TELEMETRY_DISABLED: "1" },
+    });
+    expect(r.status).toBe(0);
+    const json = JSON.parse(r.stdout);
+    const next = json.libraries.find((library: { id: string }) => library.id === "next");
+    expect(next.status).toBe("disabled");
+    expect(next.env[0].source).toBe("process-env");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("cli init --example --json reports against the written target", () => {
+  const dir = fixture({ dependencies: { next: "15" } });
+  try {
+    const r = run(["init", "-y", "--example", "--json"], {
+      cwd: dir,
+      env: { ...process.env, CI: "true", NEXT_TELEMETRY_DISABLED: undefined },
+    });
+    expect(r.status).toBe(0);
+    const json = JSON.parse(r.stdout);
+    expect(json.summary.enabled).toBe(0);
+    expect(json.libraries.find((library: { id: string }) => library.id === "next").status).toBe(
+      "disabled",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("cli init --example fills empty placeholders", () => {
+  const dir = fixture({ dependencies: { next: "15" } });
+  writeFileSync(join(dir, ".env.example"), "DO_NOT_TRACK=\nNEXT_TELEMETRY_DISABLED=\n");
+  try {
+    const r = run(["init", "-y", "--example", "--json"], {
+      cwd: dir,
+      env: { ...process.env, CI: "true" },
+    });
+    expect(r.status).toBe(0);
+    const json = JSON.parse(r.stdout);
+    expect(json.actions.filter((action: { type: string }) => action.type === "fill")).toHaveLength(
+      2,
+    );
+    const body = readFileSync(join(dir, ".env.example"), "utf8");
+    expect(body).toBe("DO_NOT_TRACK=1\nNEXT_TELEMETRY_DISABLED=1\n");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -140,6 +196,26 @@ test("cli init --target stdout emits KEY=VAL on stdout", () => {
     expect(r.status).toBe(0);
     expect(r.stdout).toMatch(/^NEXT_TELEMETRY_DISABLED=1$/m);
     expect(r.stdout).toMatch(/^DO_NOT_TRACK=1$/m);
+    expect(existsSync(join(dir, ".env"))).toBe(false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("cli init --target stdout --json reports the projected environment", () => {
+  const dir = fixture({ dependencies: { next: "15" } });
+  try {
+    const r = run(["init", "-y", "--target", "stdout", "--json"], {
+      cwd: dir,
+      env: { ...process.env, CI: "true", NEXT_TELEMETRY_DISABLED: undefined },
+    });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toMatch(/^NEXT_TELEMETRY_DISABLED=1$/m);
+    const json = JSON.parse(r.stderr);
+    expect(json.summary.enabled).toBe(0);
+    expect(json.libraries.find((library: { id: string }) => library.id === "next").status).toBe(
+      "disabled",
+    );
     expect(existsSync(join(dir, ".env"))).toBe(false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -276,6 +352,8 @@ test("cli list --json dumps registry without package.json", () => {
     const github = json.libraries.find((l: { id: string }) => l.id === "github-cli");
     expect(turbo.env.alternatePolicy).toBe("or");
     expect(github.env.alternatePolicy).toBe("fallback");
+    expect(github.env.alsoSatisfiedBy).toHaveLength(1);
+    expect(github.env.alsoSatisfiedBy[0].accepts).toEqual(["1", "true"]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -23,6 +23,7 @@ export {
   matchesIgnore,
   resolveEnv,
   resolveEnvBinding,
+  matchesOptOut,
   type LibraryResult,
   type Status,
   type InitPlanItem,
