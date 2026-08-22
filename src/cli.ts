@@ -6,8 +6,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   applyInit,
+  entryMatches,
   failsCheck,
   filterResults,
+  parseEnvFile,
   planInit,
   scan,
   type InitPlanItem,
@@ -124,6 +126,10 @@ function log(flags: CliFlags, ...args: unknown[]): void {
   console.error(...args);
 }
 
+function fatal(...args: unknown[]): void {
+  console.error(...args);
+}
+
 function writeJson(value: unknown, flags: CliFlags, stream: "stdout" | "stderr" = "stdout"): void {
   const body =
     flags.json === "compact" ? JSON.stringify(value) + "\n" : JSON.stringify(value, null, 2) + "\n";
@@ -145,8 +151,7 @@ function entryPublic(e: RegistryEntry) {
     env:
       e.kind === "opt-out" || e.kind === "opt-in"
         ? {
-            key: e.env.key,
-            value: e.env.value,
+            ...e.env,
             ...(e.kind === "opt-out" && e.alsoSatisfiedBy?.length
               ? {
                   alsoSatisfiedBy: e.alsoSatisfiedBy,
@@ -239,10 +244,8 @@ function parseArgs(argv: string[]): CliFlags {
 }
 
 function parseTarget(v: string | undefined): InitTarget {
-  if (v === ".env" || v === ".env.local" || v === ".env.example" || v === "stdout") return v;
-  throw new UsageError(
-    `--target expects .env | .env.local | .env.example | stdout, got ${v ?? "(missing)"}`,
-  );
+  if (v) return v;
+  throw new UsageError("--target requires a path or stdout");
 }
 
 /** Allowed non-shared flags per command. Deny-by-default keeps list/why tight. */
@@ -294,10 +297,14 @@ type StatusView = {
 /** Policy = full scan minus ignores. Display applies --only / hideNotFound. */
 function prepareView(cwd: string, flags: CliFlags): StatusView {
   const full = scan(cwd);
+  for (const value of flags.ignore) {
+    if (!REGISTRY.some((entry) => entryMatches(entry, value))) {
+      throw new UsageError(`Unknown --ignore value: ${value}`);
+    }
+  }
   const policy = filterResults(full, { ignore: flags.ignore });
   const ignored = flags.ignore.length ? full.length - policy.length : 0;
-  const display = filterResults(full, {
-    ignore: flags.ignore,
+  const display = filterResults(policy, {
     only: flags.only,
     hideNotFound: !flags.json && !flags.all && !flags.only,
   });
@@ -308,7 +315,13 @@ function emitStatus(cwd: string, flags: CliFlags, view: StatusView, failOnPolicy
   const failed = failOnPolicy && view.policy.some(failsCheck);
 
   if (flags.json) {
-    emitJson(buildReport(cwd, view.display, { ignored: view.ignored || undefined }), flags);
+    emitJson(
+      buildReport(cwd, view.display, {
+        ignored: view.ignored || undefined,
+        summaryResults: view.policy,
+      }),
+      flags,
+    );
   } else {
     printTable(view.display);
     printSummary(view.policy);
@@ -329,12 +342,7 @@ function check(cwd: string, flags: CliFlags): number {
 
 /** Find registry entry by id or package name. */
 function findEntry(idOrPkg: string): RegistryEntry | undefined {
-  const needle = idOrPkg.toLowerCase();
-  return REGISTRY.find(
-    (e) =>
-      e.id === needle ||
-      e.packages.some((p) => p === idOrPkg || p === needle || p.replace(/\/\*$/, "") === needle),
-  );
+  return REGISTRY.find((entry) => entryMatches(entry, idOrPkg));
 }
 
 function listRegistry(flags: CliFlags): number {
@@ -362,7 +370,7 @@ function whyEntry(flags: CliFlags): number {
   if (!id) {
     const msg = "usage: no-telemetry why <id>";
     if (flags.json) emitJson(buildErrorReport(process.cwd(), msg), flags);
-    else log(flags, msg);
+    else fatal(msg);
     return EXIT_ERROR;
   }
   const entry = findEntry(id);
@@ -370,7 +378,7 @@ function whyEntry(flags: CliFlags): number {
     const msg = `Unknown library id: ${id}`;
     if (flags.json) emitJson(buildErrorReport(process.cwd(), msg), flags);
     else {
-      log(flags, msg);
+      fatal(msg);
       log(flags, c.dim("Run `no-telemetry list` to see registry ids."));
     }
     return EXIT_ERROR;
@@ -403,7 +411,7 @@ function whyEntry(flags: CliFlags): number {
 }
 
 async function confirm(msg: string): Promise<boolean> {
-  const rl = createInterface({ input, output });
+  const rl = createInterface({ input, output: stderr });
   try {
     const ans = await rl.question(msg);
     return ans.trim().toLowerCase() === "y" || ans.trim().toLowerCase() === "yes";
@@ -418,13 +426,18 @@ function emitInitError(
   error: string,
   actions: ReportAction[] = [],
 ): void {
-  if (flags.json) emitJson(buildErrorReport(cwd, error, { actions }), flags);
-  else log(flags, error);
+  if (flags.json) {
+    emitJson(
+      buildErrorReport(cwd, error, { actions }),
+      flags,
+      flags.target === "stdout" ? "stderr" : "stdout",
+    );
+  } else fatal(error);
 }
 
 function humanOut(flags: CliFlags): (...args: unknown[]) => void {
-  if (flags.quiet) return () => {};
-  return flags.target === "stdout" ? (...a) => console.error(...a) : console.log;
+  if (flags.target !== "stdout") return console.log;
+  return flags.quiet ? () => {} : (...args) => console.error(...args);
 }
 
 function emitInitSuccess(
@@ -434,14 +447,19 @@ function emitInitSuccess(
   message: string,
   opts: { dotenvLines?: string[] } = {},
 ): void {
-  const report = buildReport(cwd, scan(cwd, {}), {
-    actions: [...actions, { type: "message", message }],
-  });
   for (const line of opts.dotenvLines ?? []) console.log(line);
 
   if (flags.json) {
-    // KEY=VAL on stdout for --target stdout; keep JSON off that stream when lines exist.
-    emitJson(report, flags, (opts.dotenvLines?.length ?? 0) > 0 ? "stderr" : "stdout");
+    const processEnv =
+      flags.target === "stdout"
+        ? { ...process.env, ...parseEnvFile((opts.dotenvLines ?? []).join("\n")) }
+        : process.env;
+    const envFiles = flags.target === "stdout" ? [] : [flags.target];
+    const report = buildReport(cwd, scan(cwd, processEnv, { envFiles }), {
+      actions: [...actions, { type: "message", message }],
+    });
+    // stdout is reserved for KEY=VAL lines when it is the selected target.
+    emitJson(report, flags, flags.target === "stdout" ? "stderr" : "stdout");
     return;
   }
 
@@ -452,12 +470,14 @@ function printInitPlan(
   out: (...args: unknown[]) => void,
   targetLabel: string,
   adds: Extract<InitPlanItem, { kind: "add" }>[],
+  fills: Extract<InitPlanItem, { kind: "fill" }>[],
   oks: Extract<InitPlanItem, { kind: "ok" }>[],
   conflicts: Extract<InitPlanItem, { kind: "conflict" }>[],
 ): void {
   out(`Will write to ${targetLabel}:\n`);
   for (const p of adds) out(c.green(`  + ${p.env.key}=${p.env.value}`));
-  for (const p of oks) out(c.dim(`  · ${p.env.key}=${p.env.value} (already set)`));
+  for (const p of fills) out(c.green(`  ~ ${p.env.key}= → ${p.env.value}`));
+  for (const p of oks) out(c.dim(`  · ${p.env.key}=${p.existing} (already set)`));
   for (const p of conflicts) {
     out(c.red(`  ! ${p.env.key} conflict: have "${p.existing}", want "${p.env.value}" (skipped)`));
   }
@@ -473,23 +493,24 @@ async function init(cwd: string, flags: CliFlags): Promise<number> {
   }
 
   const adds = plan.filter((p) => p.kind === "add");
+  const fills = plan.filter((p) => p.kind === "fill");
   const oks = plan.filter((p) => p.kind === "ok");
   const conflicts = plan.filter((p) => p.kind === "conflict");
   const actions = planToActions(plan);
   const targetLabel = flags.target === "stdout" ? "stdout" : flags.target;
   const human = humanOut(flags);
 
-  if (adds.length === 0 && conflicts.length === 0) {
+  if (adds.length === 0 && fills.length === 0 && conflicts.length === 0) {
     if (flags.json) {
       emitInitSuccess(cwd, flags, actions, "Nothing to do - all known opt-outs already set.");
     } else {
       human("Nothing to do - all known opt-outs already set.");
-      for (const p of oks) human(c.dim(`  ${p.env.key}=${p.env.value}`));
+      for (const p of oks) human(c.dim(`  ${p.env.key}=${p.existing}`));
     }
     return EXIT_OK;
   }
 
-  if (!flags.json) printInitPlan(human, targetLabel, adds, oks, conflicts);
+  if (!flags.json) printInitPlan(human, targetLabel, adds, fills, oks, conflicts);
 
   if (flags.dryRun) {
     const dotenvLines =
@@ -511,22 +532,22 @@ async function init(cwd: string, flags: CliFlags): Promise<number> {
     const ok = await confirm(`\nWrite these vars to ${targetLabel}? [y/N] `);
     if (!ok) {
       if (flags.json) emitInitError(cwd, flags, "Aborted.", actions);
-      else console.log("Aborted.");
+      else human("Aborted.");
       return EXIT_POLICY;
     }
   }
 
   const result = applyInit(cwd, plan, { target: flags.target, version: packageVersion() });
   const verb = flags.target === "stdout" ? "emitted on stdout" : "added";
-  const message = `${result.added} vars ${verb}, ${result.already} already set, ${result.conflict} skipped (conflict).`;
+  const message = `${result.added} vars ${verb}, ${result.filled} placeholders filled, ${result.already} already set, ${result.conflict} skipped (conflict).`;
   emitInitSuccess(cwd, flags, actions, message, {
     dotenvLines: flags.target === "stdout" ? result.lines : undefined,
   });
   return EXIT_OK;
 }
 
-function usage(): void {
-  console.log(`no-telemetry - disable JS/TS library telemetry
+function usage(stream: { write(chunk: string): unknown } = output): void {
+  stream.write(`no-telemetry - disable JS/TS library telemetry
 
 Usage:
   no-telemetry init [options]
@@ -555,12 +576,12 @@ Color:
 init options:
   --yes, -y                Skip confirmation (required when non-TTY or CI=true)
   --dry-run                Show plan without writing
-  --target <path>          .env (default) | .env.local | .env.example | stdout
+  --target <path>          Env file path or stdout (default: .env)
   --example                Shorthand for --target .env.example (commit-safe)
 
 doctor/check options:
   --only <filter>          installed | failing
-  --ignore <id>            Omit library id/package from results and check policy
+  --ignore <value>         Omit library id/name/package from results and check policy
   --all                    Show not-found libraries in human table (hidden by default)
 
 Exit codes:
@@ -580,8 +601,8 @@ async function main(): Promise<number> {
     assertCommandFlags(flags);
   } catch (e) {
     if (e instanceof UsageError) {
-      console.error(e.message);
-      usage();
+      fatal(e.message);
+      usage(stderr);
       return EXIT_ERROR;
     }
     throw e;
@@ -598,7 +619,7 @@ async function main(): Promise<number> {
   }
 
   if (!flags.cmd) {
-    usage();
+    usage(stderr);
     return EXIT_ERROR;
   }
 
@@ -611,14 +632,19 @@ async function main(): Promise<number> {
     else if (flags.cmd === "list") code = listRegistry(flags);
     else if (flags.cmd === "why") code = whyEntry(flags);
     else {
-      log(flags, `Unknown command: ${flags.cmd}\n`);
-      usage();
+      fatal(`Unknown command: ${flags.cmd}\n`);
+      usage(stderr);
       code = EXIT_ERROR;
     }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    if (flags.json) emitJson(buildErrorReport(cwd, msg), flags);
-    else log(flags, msg);
+    if (flags.json) {
+      emitJson(
+        buildErrorReport(cwd, msg),
+        flags,
+        flags.cmd === "init" && flags.target === "stdout" ? "stderr" : "stdout",
+      );
+    } else fatal(msg);
     code = EXIT_ERROR;
   }
   return code;

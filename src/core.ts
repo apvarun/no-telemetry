@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { DO_NOT_TRACK, REGISTRY, type EnvOptOut, type RegistryEntry } from "./registry.ts";
 
 /** Machine-stable status tokens (CLI maps these to display labels). */
@@ -25,8 +25,8 @@ export type LibraryResult = {
   env: EnvBinding[];
 };
 
-/** Init write targets. Default `.env`. */
-export type InitTarget = ".env" | ".env.local" | ".env.example" | "stdout";
+/** Init write target path, or `stdout`. Default `.env`. */
+export type InitTarget = string;
 
 export type ScanOptions = {
   /**
@@ -50,6 +50,7 @@ export type ApplyInitOptions = {
 
 export type ApplyInitResult = {
   added: number;
+  filled: number;
   already: number;
   conflict: number;
   /** KEY=VALUE lines that were or would be written (including dry stdout). */
@@ -66,10 +67,17 @@ export function failsCheck(result: LibraryResult): boolean {
 export function readDeps(cwd: string): Set<string> {
   const path = join(cwd, "package.json");
   if (!existsSync(path)) throw new Error(`No package.json in ${cwd}`);
-  const pkg = JSON.parse(readFileSync(path, "utf8")) as {
+  let pkg: {
     dependencies?: Record<string, string>;
     devDependencies?: Record<string, string>;
   };
+  const content = readFileSync(path, "utf8");
+  try {
+    pkg = JSON.parse(content);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid package.json at ${path}: ${message}`);
+  }
   return new Set([
     ...Object.keys(pkg.dependencies ?? {}),
     ...Object.keys(pkg.devDependencies ?? {}),
@@ -98,7 +106,7 @@ export function parseEnvFile(content: string): Record<string, string> {
     const i = t.indexOf("=");
     if (i === -1) continue;
     const key = t.slice(0, i).trim();
-    let val = t.slice(i + 1).trim();
+    let val = stripEnvComment(t.slice(i + 1)).trim();
     if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
       val = val.slice(1, -1);
     }
@@ -107,9 +115,33 @@ export function parseEnvFile(content: string): Record<string, string> {
   return out;
 }
 
+/** Strip a dotenv-style inline comment while preserving # inside quotes. */
+function stripEnvComment(value: string): string {
+  let quote: '"' | "'" | undefined;
+  let escaped = false;
+  for (let i = 0; i < value.length; i++) {
+    const char = value[i]!;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\" && quote === '"') {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) quote = undefined;
+      continue;
+    }
+    if (char === '"' || char === "'") quote = char;
+    else if (char === "#") return value.slice(0, i);
+  }
+  return value;
+}
+
 /** Load a single env file relative to cwd. Missing file → {}. */
 export function loadEnvFile(cwd: string, fileName = ".env"): Record<string, string> {
-  const path = join(cwd, fileName);
+  const path = resolve(cwd, fileName);
   if (!existsSync(path)) return {};
   return parseEnvFile(readFileSync(path, "utf8"));
 }
@@ -133,7 +165,7 @@ export function loadProjectEnv(
 export function resolveEnvBinding(
   key: string,
   fileEnv: Record<string, string>,
-  processEnv: NodeJS.ProcessEnv = process.env,
+  processEnv: Record<string, string | undefined> = process.env,
   want?: string,
 ): EnvBinding {
   if (processEnv[key] !== undefined) {
@@ -149,7 +181,7 @@ export function resolveEnvBinding(
 export function resolveEnv(
   key: string,
   fileEnv: Record<string, string>,
-  processEnv: NodeJS.ProcessEnv = process.env,
+  processEnv: Record<string, string | undefined> = process.env,
 ): string | undefined {
   return resolveEnvBinding(key, fileEnv, processEnv).actual;
 }
@@ -168,7 +200,7 @@ export function evaluate(
   entry: RegistryEntry,
   deps: Set<string>,
   fileEnv: Record<string, string>,
-  processEnv: NodeJS.ProcessEnv = process.env,
+  processEnv: Record<string, string | undefined> = process.env,
 ): LibraryResult {
   if (!isInstalled(entry, deps)) {
     return result(entry, false, "not_found", "(package not installed)", []);
@@ -199,14 +231,17 @@ export function evaluate(
       const signals = [entry.env, ...(entry.alsoSatisfiedBy ?? [])];
       const env = signals.map((s) => resolveEnvBinding(s.key, fileEnv, processEnv, s.value));
       const primary = env[0]!;
-      const primaryHit = primary.actual === entry.env.value ? entry.env : undefined;
+      const primaryHit = matchesOptOut(entry.env, primary.actual) ? 0 : undefined;
       const canUseAlternates = entry.alternatePolicy !== "fallback" || primary.actual === undefined;
       const alternateHit = canUseAlternates
-        ? signals.slice(1).find((s, i) => env[i + 1]!.actual === s.value)
+        ? signals.slice(1).findIndex((s, i) => matchesOptOut(s, env[i + 1]!.actual))
         : undefined;
-      const hit = primaryHit ?? alternateHit;
-      if (hit) {
-        return result(entry, true, "disabled", `${hit.key}=${hit.value}`, env);
+      const hitIndex =
+        primaryHit ??
+        (alternateHit !== undefined && alternateHit >= 0 ? alternateHit + 1 : undefined);
+      if (hitIndex !== undefined) {
+        const hit = env[hitIndex]!;
+        return result(entry, true, "disabled", `${hit.key}=${hit.actual}`, env);
       }
       const detail =
         primary.actual === undefined
@@ -217,9 +252,16 @@ export function evaluate(
   }
 }
 
+/** Whether an observed value satisfies an opt-out binding's documented semantics. */
+export function matchesOptOut(env: EnvOptOut, actual: string | undefined): boolean {
+  if (actual === undefined) return false;
+  if (env.accepts === "non-empty") return actual.length > 0;
+  return (env.accepts ?? [env.value]).includes(actual);
+}
+
 export function scan(
   cwd: string,
-  processEnv: NodeJS.ProcessEnv = process.env,
+  processEnv: Record<string, string | undefined> = process.env,
   options: ScanOptions = {},
 ): LibraryResult[] {
   const deps = readDeps(cwd);
@@ -229,7 +271,8 @@ export function scan(
 
 export type InitPlanItem =
   | { kind: "add"; env: EnvOptOut }
-  | { kind: "ok"; env: EnvOptOut }
+  | { kind: "fill"; env: EnvOptOut; existing: "" }
+  | { kind: "ok"; env: EnvOptOut; existing: string }
   | { kind: "conflict"; env: EnvOptOut; existing: string };
 
 function targetFileName(target: InitTarget): string | null {
@@ -260,7 +303,8 @@ export function planInit(cwd: string, options: PlanInitOptions = {}): InitPlanIt
     seen.add(env.key);
     const existing = fileEnv[env.key];
     if (existing === undefined) items.push({ kind: "add", env });
-    else if (existing === env.value) items.push({ kind: "ok", env });
+    else if (existing === "") items.push({ kind: "fill", env, existing });
+    else if (matchesOptOut(env, existing)) items.push({ kind: "ok", env, existing });
     else items.push({ kind: "conflict", env, existing });
   }
   return items;
@@ -271,7 +315,10 @@ export function initCommentBlock(version = "0.0.0", when = new Date()): string {
   return `# no-telemetry ${version} - ${when.toISOString()}`;
 }
 
-/** Append missing keys to target file; never overwrite. stdout returns lines only. */
+const INIT_START = "# no-telemetry:start";
+const INIT_END = "# no-telemetry:end";
+
+/** Fill empty placeholders and append missing keys. Non-empty values are never overwritten. */
 export function applyInit(
   cwd: string,
   plan: InitPlanItem[],
@@ -279,34 +326,80 @@ export function applyInit(
 ): ApplyInitResult {
   const target = options.target ?? ".env";
   const toAdd = plan.filter((p) => p.kind === "add");
+  const toFill = plan.filter((p) => p.kind === "fill");
   const already = plan.filter((p) => p.kind === "ok").length;
   const conflict = plan.filter((p) => p.kind === "conflict").length;
-  const lines = toAdd.map((p) => `${p.env.key}=${p.env.value}`);
+  const lines = [...toFill, ...toAdd].map((p) => `${p.env.key}=${p.env.value}`);
 
-  if (toAdd.length === 0) {
-    return { added: 0, already, conflict, lines: [], path: null };
+  if (toAdd.length === 0 && toFill.length === 0) {
+    return { added: 0, filled: 0, already, conflict, lines: [], path: null };
   }
 
   if (target === "stdout") {
-    return { added: toAdd.length, already, conflict, lines, path: null };
+    return { added: toAdd.length, filled: toFill.length, already, conflict, lines, path: null };
   }
 
-  const path = join(cwd, target);
+  const path = resolve(cwd, target);
   let content = existsSync(path) ? readFileSync(path, "utf8") : "";
-  if (content && !content.endsWith("\n")) content += "\n";
+  content = fillPlaceholders(content, toFill);
+  const addLines = toAdd.map((p) => `${p.env.key}=${p.env.value}`);
+  if (addLines.length > 0) {
+    const newline = content.includes("\r\n") ? "\r\n" : "\n";
+    const start = content.indexOf(INIT_START);
+    const end = content.indexOf(INIT_END);
+    if (start !== -1 && end > start) {
+      content = `${content.slice(0, end)}${addLines.join(newline)}${newline}${content.slice(end)}`;
+    } else {
+      if (content && !content.endsWith("\n")) content += newline;
+      if (content) content += newline;
+      content += [
+        INIT_START,
+        initCommentBlock(options.version ?? "0.0.0"),
+        ...addLines,
+        INIT_END,
+        "",
+      ].join(newline);
+    }
+  }
 
-  const block = ["", initCommentBlock(options.version ?? "0.0.0"), ...lines, ""].join("\n");
-
-  writeFileSync(path, content + block, "utf8");
-  return { added: toAdd.length, already, conflict, lines, path };
+  writeFileSync(path, content, "utf8");
+  return { added: toAdd.length, filled: toFill.length, already, conflict, lines, path };
 }
 
-/** Match --ignore ids against registry entry id or any package name. */
+function fillPlaceholders(
+  content: string,
+  fills: Extract<InitPlanItem, { kind: "fill" }>[],
+): string {
+  if (fills.length === 0) return content;
+  const newline = content.includes("\r\n") ? "\r\n" : "\n";
+  const lines = content.split(/\r?\n/);
+  for (const fill of fills) {
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const parsed = parseEnvFile(lines[i]!);
+      if (Object.hasOwn(parsed, fill.env.key) && parsed[fill.env.key] === "") {
+        lines[i] = `${fill.env.key}=${fill.env.value}`;
+        break;
+      }
+    }
+  }
+  return lines.join(newline);
+}
+
+/** Match a registry entry by id, display name, package, or scoped package pattern. */
+export function entryMatches(entry: RegistryEntry, value: string): boolean {
+  const needle = value.toLowerCase();
+  if (entry.id.toLowerCase() === needle || entry.name.toLowerCase() === needle) return true;
+  return entry.packages.some((packageName) => {
+    const pattern = packageName.toLowerCase();
+    if (!pattern.endsWith("/*")) return pattern === needle;
+    const scope = pattern.slice(0, -2);
+    return needle === scope || needle.startsWith(`${scope}/`);
+  });
+}
+
+/** Match --ignore values against registry entry ids, names, or packages. */
 export function matchesIgnore(entry: RegistryEntry, ignoreIds: string[]): boolean {
-  if (ignoreIds.length === 0) return false;
-  const set = new Set(ignoreIds);
-  if (set.has(entry.id)) return true;
-  return entry.packages.some((p) => set.has(p) || set.has(p.replace(/\/\*$/, "")));
+  return ignoreIds.some((value) => entryMatches(entry, value));
 }
 
 export type FilterOptions = {

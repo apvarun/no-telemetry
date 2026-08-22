@@ -73,7 +73,7 @@ Public (semver) surface from `import "no-telemetry"`:
 | `buildReport` / `buildErrorReport`            | JSON DTO (`version: 1`; optional `error`) |
 | `LibraryResult`, `Status`, `ReportV1`, …      | Types                                     |
 
-Command-scoped CLI flags: `init` owns `--yes` / `--dry-run` / `--target` / `--example`; `doctor`/`check` own `--only` / `--ignore` / `--all`; `list` / `why` take only shared flags. Cross-use is a usage error (exit 2).
+Command-scoped CLI flags: `init` owns `--yes` / `--dry-run` / `--target` / `--example`; `doctor`/`check` own `--only` / `--ignore` / `--all`; `list` / `why` take only shared flags. `--target` accepts an env-file path or `stdout`. Cross-use is a usage error (exit 2).
 
 CLI human table formatting is **not** a stable contract - use `--json` / `--json=compact` and exit codes.
 

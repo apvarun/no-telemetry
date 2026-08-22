@@ -1,6 +1,9 @@
 export type EnvOptOut = {
   key: string;
+  /** Recommended value written by init. */
   value: string;
+  /** Values that satisfy the opt-out. Defaults to an exact match with `value`. */
+  accepts?: readonly string[] | "non-empty";
 };
 
 type RegistryBase = {
@@ -307,7 +310,11 @@ export const REGISTRY: RegistryEntry[] = [
     kind: "opt-out",
     name: "Hookdeck CLI",
     packages: ["hookdeck-cli", "@hookdeck/cli"],
-    env: { key: "HOOKDECK_CLI_TELEMETRY_DISABLED", value: "1" },
+    env: {
+      key: "HOOKDECK_CLI_TELEMETRY_DISABLED",
+      value: "1",
+      accepts: ["1", "true"],
+    },
     notes: "Also accepts true; CLI: hookdeck telemetry disabled",
     docs: "https://github.com/hookdeck/hookdeck-cli#telemetry",
   },
@@ -381,7 +388,7 @@ export const REGISTRY: RegistryEntry[] = [
     kind: "opt-out",
     name: "Claude Code",
     packages: ["@anthropic-ai/claude-code"],
-    env: { key: "DISABLE_TELEMETRY", value: "1" },
+    env: { key: "DISABLE_TELEMETRY", value: "1", accepts: "non-empty" },
     alsoSatisfiedBy: [{ key: "DO_NOT_TRACK", value: "1" }],
     notes:
       "Official docs: any non-empty value opts out (we recommend 1). Also honors DO_NOT_TRACK; CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 is broader",
@@ -404,10 +411,7 @@ export const REGISTRY: RegistryEntry[] = [
     packages: ["@cli/cli", "gh"],
     env: { key: "GH_TELEMETRY", value: "false" },
     // Docs show DO_NOT_TRACK=true; 1 is the Console DNT convention we write via init.
-    alsoSatisfiedBy: [
-      { key: "DO_NOT_TRACK", value: "1" },
-      { key: "DO_NOT_TRACK", value: "true" },
-    ],
+    alsoSatisfiedBy: [{ key: "DO_NOT_TRACK", value: "1", accepts: ["1", "true"] }],
     alternatePolicy: "fallback",
     notes:
       "Usually brew/system install; also honors DO_NOT_TRACK (1 or true). Rare npm package names included for completeness",
@@ -439,7 +443,7 @@ export const REGISTRY: RegistryEntry[] = [
     kind: "opt-out",
     name: "Flyway (Redgate)",
     packages: ["node-flywaydb", "@flywaydb/flyway-cli", "flyway-cli"],
-    env: { key: "REDGATE_DISABLE_TELEMETRY", value: "true" },
+    env: { key: "REDGATE_DISABLE_TELEMETRY", value: "true", accepts: "non-empty" },
     notes: "Any non-empty value disables; package names vary by wrapper",
     docs: "https://documentation.red-gate.com/fd/redgate-disable-telemetry-environment-variable-277579301.html",
   },
@@ -464,4 +468,8 @@ export const REGISTRY: RegistryEntry[] = [
 ];
 
 /** Always written by `init` - harmless universal fallback. */
-export const DO_NOT_TRACK: EnvOptOut = { key: "DO_NOT_TRACK", value: "1" };
+export const DO_NOT_TRACK: EnvOptOut = {
+  key: "DO_NOT_TRACK",
+  value: "1",
+  accepts: ["1", "true"],
+};

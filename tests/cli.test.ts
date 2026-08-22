@@ -118,6 +118,7 @@ test("cli init -y --json writes .env", () => {
     expect(r.status).toBe(0);
     const json = JSON.parse(r.stdout);
     expect(json.version).toBe(1);
+    expect(json.summary.enabled).toBe(0);
     expect(json.actions.some((a: { type: string; key?: string }) => a.type === "add")).toBe(true);
     const body = readFileSync(join(dir, ".env"), "utf8");
     expect(body).toContain("NEXT_TELEMETRY_DISABLED=1");
@@ -125,6 +126,61 @@ test("cli init -y --json writes .env", () => {
 
     const check = run(["check", "--json"], { cwd: dir, env: { ...process.env, CI: "" } });
     expect(check.status).toBe(0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("cli init --json honors process env over a conflicting target value", () => {
+  const dir = fixture({ dependencies: { next: "15" } }, "NEXT_TELEMETRY_DISABLED=0\n");
+  try {
+    const r = run(["init", "-y", "--json"], {
+      cwd: dir,
+      env: { ...process.env, CI: "true", NEXT_TELEMETRY_DISABLED: "1" },
+    });
+    expect(r.status).toBe(0);
+    const json = JSON.parse(r.stdout);
+    const next = json.libraries.find((library: { id: string }) => library.id === "next");
+    expect(next.status).toBe("disabled");
+    expect(next.env[0].source).toBe("process-env");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("cli init --example --json reports against the written target", () => {
+  const dir = fixture({ dependencies: { next: "15" } });
+  try {
+    const r = run(["init", "-y", "--example", "--json"], {
+      cwd: dir,
+      env: { ...process.env, CI: "true", NEXT_TELEMETRY_DISABLED: undefined },
+    });
+    expect(r.status).toBe(0);
+    const json = JSON.parse(r.stdout);
+    expect(json.summary.enabled).toBe(0);
+    expect(json.libraries.find((library: { id: string }) => library.id === "next").status).toBe(
+      "disabled",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("cli init --example fills empty placeholders", () => {
+  const dir = fixture({ dependencies: { next: "15" } });
+  writeFileSync(join(dir, ".env.example"), "DO_NOT_TRACK=\nNEXT_TELEMETRY_DISABLED=\n");
+  try {
+    const r = run(["init", "-y", "--example", "--json"], {
+      cwd: dir,
+      env: { ...process.env, CI: "true" },
+    });
+    expect(r.status).toBe(0);
+    const json = JSON.parse(r.stdout);
+    expect(json.actions.filter((action: { type: string }) => action.type === "fill")).toHaveLength(
+      2,
+    );
+    const body = readFileSync(join(dir, ".env.example"), "utf8");
+    expect(body).toBe("DO_NOT_TRACK=1\nNEXT_TELEMETRY_DISABLED=1\n");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -140,6 +196,26 @@ test("cli init --target stdout emits KEY=VAL on stdout", () => {
     expect(r.status).toBe(0);
     expect(r.stdout).toMatch(/^NEXT_TELEMETRY_DISABLED=1$/m);
     expect(r.stdout).toMatch(/^DO_NOT_TRACK=1$/m);
+    expect(existsSync(join(dir, ".env"))).toBe(false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("cli init --target stdout --json reports the projected environment", () => {
+  const dir = fixture({ dependencies: { next: "15" } });
+  try {
+    const r = run(["init", "-y", "--target", "stdout", "--json"], {
+      cwd: dir,
+      env: { ...process.env, CI: "true", NEXT_TELEMETRY_DISABLED: undefined },
+    });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toMatch(/^NEXT_TELEMETRY_DISABLED=1$/m);
+    const json = JSON.parse(r.stderr);
+    expect(json.summary.enabled).toBe(0);
+    expect(json.libraries.find((library: { id: string }) => library.id === "next").status).toBe(
+      "disabled",
+    );
     expect(existsSync(join(dir, ".env"))).toBe(false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -163,6 +239,22 @@ test("cli init --target .env.local", () => {
   }
 });
 
+test("cli init accepts a nested target path", () => {
+  const dir = fixture({ dependencies: { next: "15" } });
+  mkdirSync(join(dir, "apps", "web"), { recursive: true });
+  const target = "apps/web/.env.development";
+  try {
+    const r = run(["init", "-y", "--target", target], {
+      cwd: dir,
+      env: { ...process.env, CI: "true" },
+    });
+    expect(r.status).toBe(0);
+    expect(readFileSync(join(dir, target), "utf8")).toContain("NEXT_TELEMETRY_DISABLED=1");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("cli doctor --only failing", () => {
   const dir = fixture({ dependencies: { next: "15", turbo: "2" } }, "TURBO_TELEMETRY_DISABLED=1\n");
   try {
@@ -174,6 +266,9 @@ test("cli doctor --only failing", () => {
     const json = JSON.parse(r.stdout);
     expect(json.libraries.every((l: { failsCheck: boolean }) => l.failsCheck)).toBe(true);
     expect(json.libraries.some((l: { id: string }) => l.id === "next")).toBe(true);
+    expect(json.summary.applicable).toBe(2);
+    expect(json.summary.disabled).toBe(1);
+    expect(json.summary.enabled).toBe(1);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -187,6 +282,38 @@ test("cli check --ignore next", () => {
       env: { ...process.env, CI: "" },
     });
     expect(r.status).toBe(0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("cli ignore matches case, display names, and scoped packages", () => {
+  const cases = [
+    [{ dependencies: { next: "15" } }, "NEXT"],
+    [{ dependencies: { next: "15" } }, "Next.js"],
+    [{ dependencies: { "@storybook/react": "8" } }, "@storybook/react"],
+  ] as const;
+  for (const [pkg, ignored] of cases) {
+    const dir = fixture(pkg);
+    try {
+      const r = run(["check", "--json", "--ignore", ignored], {
+        cwd: dir,
+        env: { ...process.env, CI: "" },
+      });
+      expect(r.status).toBe(0);
+      expect(JSON.parse(r.stdout).summary.ignored).toBe(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("cli rejects an unknown --ignore value", () => {
+  const dir = fixture({ dependencies: { next: "15" } });
+  try {
+    const r = run(["check", "--ignore", "not-a-library"], { cwd: dir });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain("Unknown --ignore value: not-a-library");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -261,6 +388,36 @@ test("cli init error JSON uses ReportV1 with error field", () => {
   }
 });
 
+test("cli init --target stdout keeps error JSON off stdout", () => {
+  const dir = join(tmpdir(), `no-telemetry-empty-${Date.now()}`);
+  mkdirSync(dir, { recursive: true });
+  try {
+    const r = run(["init", "-y", "--target", "stdout", "--json"], {
+      cwd: dir,
+      env: { ...process.env, CI: "true" },
+    });
+    expect(r.status).toBe(2);
+    expect(r.stdout).toBe("");
+    expect(JSON.parse(r.stderr).error).toContain("No package.json");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("cli reports malformed package.json with its path", () => {
+  const dir = fixture({});
+  writeFileSync(join(dir, "package.json"), '{"dependencies":');
+  try {
+    const r = run(["doctor", "--quiet"], { cwd: dir });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain(
+      `Invalid package.json at ${realpathSync(join(dir, "package.json"))}`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("cli list --json dumps registry without package.json", () => {
   const dir = join(tmpdir(), `no-telemetry-list-${Date.now()}`);
   mkdirSync(dir, { recursive: true });
@@ -276,6 +433,8 @@ test("cli list --json dumps registry without package.json", () => {
     const github = json.libraries.find((l: { id: string }) => l.id === "github-cli");
     expect(turbo.env.alternatePolicy).toBe("or");
     expect(github.env.alternatePolicy).toBe("fallback");
+    expect(github.env.alsoSatisfiedBy).toHaveLength(1);
+    expect(github.env.alsoSatisfiedBy[0].accepts).toEqual(["1", "true"]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -295,6 +454,12 @@ test("cli why --json next", () => {
   expect(json.id).toBe("next");
   expect(json.env.key).toBe("NEXT_TELEMETRY_DISABLED");
   expect(json.docs).toContain("nextjs.org");
+});
+
+test("cli why resolves scoped package names", () => {
+  const r = run(["why", "@storybook/react", "--json"], { cwd: root });
+  expect(r.status).toBe(0);
+  expect(JSON.parse(r.stdout).id).toBe("storybook");
 });
 
 test("cli why unknown id exits 2", () => {
@@ -320,23 +485,38 @@ test("cli why missing id keeps JSON under --quiet", () => {
   expect(JSON.parse(r.stdout).error).toMatch(/why <id>/);
 });
 
-test("cli --quiet suppresses runtime diagnostics", () => {
+test("cli --quiet still reports fatal errors", () => {
   const dir = join(tmpdir(), `no-telemetry-quiet-${Date.now()}`);
   mkdirSync(dir, { recursive: true });
   try {
     const r = run(["doctor", "--quiet"], { cwd: dir, env: { ...process.env, CI: "" } });
     expect(r.status).toBe(2);
-    expect(r.stderr).toBe("");
+    expect(r.stderr).toContain("No package.json");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("cli --quiet suppresses unknown-command diagnostics", () => {
+test("cli --quiet still reports unknown commands", () => {
   const r = run(["not-a-command", "--quiet"], { cwd: root });
   expect(r.status).toBe(2);
-  expect(r.stderr).toBe("");
-  expect(r.stdout).toContain("Usage:");
+  expect(r.stderr).toContain("Unknown command: not-a-command");
+  expect(r.stderr).toContain("Usage:");
+  expect(r.stdout).toBe("");
+});
+
+test("cli --quiet keeps init results on stdout", () => {
+  const dir = fixture({ dependencies: { next: "15" } });
+  try {
+    const r = run(["init", "-y", "--quiet"], {
+      cwd: dir,
+      env: { ...process.env, CI: "true" },
+    });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain("vars added");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("cli --json=compact is one line", () => {

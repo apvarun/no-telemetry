@@ -108,12 +108,7 @@ try {
       !("require" in packageJson.exports["."]),
     "root export must be explicitly ESM-only with TypeScript declarations",
   );
-  assert(
-    packageJson.exports?.["./cli"]?.import === "./dist/cli.mjs" &&
-      packageJson.exports?.["./cli"]?.types === "./dist/cli.d.mts" &&
-      !("require" in packageJson.exports["./cli"]),
-    "CLI export must be explicitly ESM-only with TypeScript declarations",
-  );
+  assert(packageJson.exports?.["./cli"] === undefined, "CLI subpath must not be exported");
 
   const expectedTopLevel = [
     "CHANGELOG.md",
@@ -197,10 +192,6 @@ try {
         "nodenext",
         "--moduleResolution",
         "nodenext",
-        "--types",
-        "node",
-        "--typeRoots",
-        join(projectRoot, "node_modules", "@types"),
         typeConsumerPath,
       ],
       { cwd: tempRoot },

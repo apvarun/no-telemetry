@@ -27,6 +27,7 @@ export type LibraryReport = {
 
 export type ReportAction =
   | { type: "add"; key: string; value: string }
+  | { type: "fill"; key: string; value: string }
   | { type: "ok"; key: string; value: string }
   | { type: "conflict"; key: string; value: string; existing: string }
   | { type: "message"; message: string };
@@ -97,7 +98,8 @@ export function toLibraryReport(r: LibraryResult): LibraryReport {
 export function planToActions(plan: InitPlanItem[]): ReportAction[] {
   return plan.map((p) => {
     if (p.kind === "add") return { type: "add" as const, key: p.env.key, value: p.env.value };
-    if (p.kind === "ok") return { type: "ok" as const, key: p.env.key, value: p.env.value };
+    if (p.kind === "fill") return { type: "fill" as const, key: p.env.key, value: p.env.value };
+    if (p.kind === "ok") return { type: "ok" as const, key: p.env.key, value: p.existing };
     return {
       type: "conflict" as const,
       key: p.env.key,
@@ -110,9 +112,14 @@ export function planToActions(plan: InitPlanItem[]): ReportAction[] {
 export function buildReport(
   cwd: string,
   results: LibraryResult[],
-  options: { actions?: ReportAction[]; ignored?: number; error?: string } = {},
+  options: {
+    actions?: ReportAction[];
+    ignored?: number;
+    error?: string;
+    summaryResults?: LibraryResult[];
+  } = {},
 ): ReportV1 {
-  const summary = summarize(results);
+  const summary = summarize(options.summaryResults ?? results);
   if (options.ignored !== undefined) summary.ignored = options.ignored;
   const report: ReportV1 = {
     version: 1,

@@ -5,6 +5,30 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0]
+
+### Added
+
+- `init --target` now accepts arbitrary env-file paths, including nested monorepo targets.
+- Generated opt-outs now live in one marker-delimited section so later additions do not append another dated block.
+
+### Fixed
+
+- Checks now honor documented multi-value and non-empty opt-out semantics.
+- Inline comments in unquoted dotenv values no longer cause false policy failures.
+- `init` fills empty dotenv placeholders in place without creating duplicate keys.
+- `init --json` reports against the current process environment and selected target.
+- `--ignore` and `why` now share case-insensitive id, display-name, package, and scope matching; unknown ignores fail clearly.
+- `init --target stdout` keeps prompts, diagnostics, and JSON errors off the dotenv stream.
+- `--quiet` no longer hides fatal errors or successful file-target init results.
+- JSON summaries retain full policy counts when `--only` filters displayed libraries.
+- Malformed `package.json` errors identify the file and preserve the parser detail.
+- Public declarations compile without requiring consumers to install `@types/node`.
+
+### Removed
+
+- Removed the undocumented, side-effectful `no-telemetry/cli` package subpath; the `no-telemetry` binary remains the CLI entry point.
+
 ## [0.1.0]
 
 ### Added
