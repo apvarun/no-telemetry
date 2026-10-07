@@ -43,8 +43,7 @@
     "prepare": "vp config"
   },
   "devDependencies": {
-    "@types/node": "^26.1.1",
-    "bumpp": "^11.1.0",
+    "@types/node": "^26.6.4",
     "typescript": "^7.0.2",
     "vite": "catalog:",
     "vite-plus": "catalog:"
@@ -52,12 +51,12 @@
   "devEngines": {
     "packageManager": {
       "name": "pnpm",
-      "version": "11.20.0",
+      "version": "12.10.0",
       "onFail": "download"
     }
   },
   "engines": {
     "node": ">=18"
   },
-  "packageManager": "pnpm@11.20.0"
+  "packageManager": "pnpm@12.10.0"
 }

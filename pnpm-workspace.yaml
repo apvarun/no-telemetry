@@ -1,6 +1,11 @@
 catalog:
-  vite: npm:@voidzero-dev/vite-plus-core@0.2.8
-  vite-plus: 0.2.8
+  vite: npm:@voidzero-dev/vite-plus-core@1.0.0
+  vite-plus: 1.0.0
+minimumReleaseAgeExclude:
+  - vitest@4.1.11
+  - "@vitest/mocker@4.1.11"
+  - source-map-js@1.2.2
+  - tinypool@2.1.1 || 2.1.2
 overrides:
   vite: "catalog:"
 peerDependencyRules:
