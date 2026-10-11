@@ -135,9 +135,9 @@ try {
   }
   assert(
     readdirSync(join(packageRoot, "dist")).some(
-      (file) => file.startsWith("report-") && file.endsWith(".mjs"),
+      (file) => file.endsWith(".mjs") && !["cli.mjs", "index.mjs"].includes(file),
     ),
-    "missing bundled report chunk",
+    "missing bundled shared chunk",
   );
 
   const binTarget = join(packageRoot, packageJson.bin["no-telemetry"]);
@@ -153,16 +153,54 @@ try {
   assert(version === packageJson.version, `CLI version mismatch: ${version}`);
 
   const list = JSON.parse(cli(["list", "--json=compact"]).stdout);
-  assert(list.version === 1 && list.libraries.length === 43, "registry list smoke failed");
+  assert(
+    list.version === 1 &&
+      list.libraries.length > 0 &&
+      new Set(list.libraries.map((entry) => entry.id)).size === list.libraries.length,
+    "registry list smoke failed",
+  );
   const why = JSON.parse(cli(["why", "next", "--json=compact"]).stdout);
   assert(why.id === "next" && why.env.key === "NEXT_TELEMETRY_DISABLED", "why smoke failed");
+
+  const outside = join(tempRoot, "outside");
+  mkdirSync(outside);
+  const execution = cli(
+    [
+      "run",
+      "--quiet",
+      "--",
+      process.execPath,
+      "-e",
+      "process.stdout.write(JSON.stringify({dnt:process.env.DO_NOT_TRACK,dotnet:process.env.DOTNET_CLI_TELEMETRY_OPTOUT,custom:process.env.SMOKE_CUSTOM,args:process.argv.slice(1)}))",
+      "--",
+      "--json",
+      "space argument",
+    ],
+    {
+      cwd: outside,
+      env: { ...process.env, SMOKE_CUSTOM: "keep", DOTNET_CLI_TELEMETRY_OPTOUT: "0" },
+    },
+  );
+  assert(
+    JSON.stringify(JSON.parse(execution.stdout)) ===
+      JSON.stringify({ dnt: "1", dotnet: "1", custom: "keep", args: ["--json", "space argument"] }),
+    "packed run environment/args failed",
+  );
+  assert(
+    execution.stderr === "" && readdirSync(outside).length === 0,
+    "packed run altered files or stderr",
+  );
+  cli(["run", "--quiet", "--include", "dotnet", "--", process.execPath, "-e", "process.exit(37)"], {
+    cwd: outside,
+    status: 37,
+  });
 
   const consumerPath = join(tempRoot, "consumer.mjs");
   writeFileSync(
     consumerPath,
     [
       'import { REGISTRY, planInit, scan } from "no-telemetry";',
-      'if (REGISTRY.length !== 43) throw new Error("registry import failed");',
+      `if (JSON.stringify(REGISTRY.map(entry => entry.id)) !== ${JSON.stringify(JSON.stringify(list.libraries.map((entry) => entry.id)))}) throw new Error("registry import failed");`,
       'if (typeof planInit !== "function" || typeof scan !== "function") throw new Error("API import failed");',
       "",
     ].join("\n"),

@@ -3,7 +3,8 @@ name: no-telemetry
 description: >-
   Disable and verify telemetry opt-outs for JS/TS libraries (Next.js, Prisma,
   Turborepo, Storybook, etc.). Use after scaffolding, after adding dependencies,
-  or before opening a PR. Offline, no network, structured JSON + exit codes.
+  or before opening a PR. Launch commands with cross-ecosystem opt-outs using run.
+  Offline registry, structured JSON reports and exit codes.
 ---
 
 # no-telemetry
@@ -29,6 +30,10 @@ npx no-telemetry check --json=compact
 
 # Report only (always exit 0)
 npx no-telemetry doctor --json=compact
+
+# Execute with opt-outs (no package.json required; child output stays unchanged)
+npx no-telemetry run -- npm run build
+npx no-telemetry run --include dotnet -- dotnet build
 
 # Discover coverage (no package.json required)
 npx no-telemetry list --json=compact
@@ -75,7 +80,15 @@ Status tokens: `disabled` | `enabled` | `not_applicable` | `not_found` | `unsupp
 
 `check` fails when any non-ignored library has `failsCheck: true` (status `enabled`).
 
-Bindings may report multiple `accepts` values or `"non-empty"`. Alternate signals use OR semantics by default. If a `why` / `list` row reports `alternatePolicy: "fallback"`, its `alsoSatisfiedBy` values apply only while the primary env key is unset.
+Optional `file` and `shadowed` fields show assignment sources. Precedence is process environment, `.env.local`, `.env`, including empty values. Fix the winning assignment. `init` reports conflicts and overrides without replacing non-empty values.
+
+`run` requires `--` and passes child arguments unchanged. It injects all verified opt-outs, including opt-in disable values, plus DNT. Repeat exact-ID `--include` / `--ignore`; exclusion wins and DNT remains. It loads no dotenv files and changes neither files nor parent environment.
+
+`--quiet` suppresses wrapper diagnostics; `--json` is rejected. It forwards SIGINT/SIGTERM and propagates child exit codes or POSIX signals. Usage and launch errors return `2`. Use `sh -c` for shell syntax or `cmd.exe /d /s /c` for Windows batch commands. It does not block child networking.
+
+Scans detect direct npm dependencies only. Other tools are available through `run`, `list`, and `why`. Check `ecosystem`, `verifiedAt`, and notes for scope and version limits. Unsupported entries require manual action.
+
+Bindings may report multiple `accepts` values, `"non-empty"`, or `"set"` (including empty). Alternate signals use OR semantics by default. If a `why` / `list` row reports `alternatePolicy: "fallback"`, its `alsoSatisfiedBy` values apply only while the primary env key is unset.
 
 ## Rules
 
@@ -97,3 +110,5 @@ if (results.some(failsCheck)) {
   applyInit(process.cwd(), plan);
 }
 ```
+
+`buildRunEnv` returns `{ env, assignments }` without launching a process.

@@ -2,10 +2,14 @@
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output, stderr } from "node:process";
 import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   applyInit,
+  explainEnvBinding,
+  loadEnvLayers,
+  resolveEnvBinding,
+  matchesOptOut,
   entryMatches,
   failsCheck,
   filterResults,
@@ -26,6 +30,8 @@ import {
   type ReportAction,
   type ReportV1,
 } from "./report.ts";
+import { buildRunEnv } from "./run.ts";
+import { executeCommand } from "./execute.ts";
 import { shouldUseColor } from "./terminal.ts";
 
 const useColor = shouldUseColor(Boolean(output.isTTY), process.env);
@@ -92,6 +98,17 @@ function printTable(results: LibraryResult[]): void {
     const st = colorStatus(r.status, plain);
     const pad = stW - plain.length;
     console.log(`${r.entry.name.padEnd(libW)}  ${st}${" ".repeat(pad)}  ${r.detail}`);
+    for (const binding of r.env) {
+      console.log(c.dim(`  ${explainEnvBinding(binding)}`));
+    }
+    if (r.status === "enabled") {
+      const primary = r.env[0];
+      if (primary?.want !== undefined) {
+        console.log(
+          `  Set ${primary.key}=${primary.want} in ${primary.file ?? (primary.source === "process-env" ? "process environment" : ".env")}.`,
+        );
+      }
+    }
   }
 }
 
@@ -113,6 +130,8 @@ type CliFlags = {
   all: boolean;
   only: "installed" | "failing" | undefined;
   ignore: string[];
+  include: string[];
+  childArgs?: string[];
   target: InitTarget;
   /** True when user passed --target or --example. */
   targetSet: boolean;
@@ -161,6 +180,8 @@ function entryPublic(e: RegistryEntry) {
             ...(e.kind === "opt-in" ? { enableWhen: [...e.enableWhen] } : {}),
           }
         : null,
+    ecosystem: e.ecosystem ?? null,
+    verifiedAt: e.verifiedAt ?? null,
     docs: e.docs ?? null,
     notes: e.notes ?? null,
   };
@@ -183,6 +204,7 @@ function parseArgs(argv: string[]): CliFlags {
     all: false,
     only: undefined,
     ignore: [],
+    include: [],
     target: ".env",
     targetSet: false,
     help: false,
@@ -191,7 +213,17 @@ function parseArgs(argv: string[]): CliFlags {
 
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
-    if (a === "--help" || a === "-h") flags.help = true;
+    if (a === "--") {
+      if (flags.cmd !== "run") throw new UsageError("-- is only valid with run");
+      flags.childArgs = argv.slice(i + 1);
+      break;
+    } else if (a === "--include" || a.startsWith("--include=")) {
+      let value: string;
+      if (a.startsWith("--include=")) value = a.slice("--include=".length);
+      else [value, i] = takeValue(argv, i, "--include");
+      if (!value) throw new UsageError("--include requires a registry id");
+      flags.include.push(value);
+    } else if (a === "--help" || a === "-h") flags.help = true;
     else if (a === "--version" || a === "-V") flags.version = true;
     else if (a === "--yes" || a === "-y") flags.yes = true;
     else if (a === "--dry-run") flags.dryRun = true;
@@ -255,6 +287,7 @@ const CMD_FLAGS: Record<string, ReadonlySet<string>> = {
   check: new Set(["only", "ignore", "all"]),
   list: new Set(),
   why: new Set(["arg"]),
+  run: new Set(["include", "ignore"]),
 };
 
 function assertCommandFlags(flags: CliFlags): void {
@@ -263,11 +296,16 @@ function assertCommandFlags(flags: CliFlags): void {
   const allow = CMD_FLAGS[cmd]!;
 
   const checks: [boolean, string][] = [
+    [flags.include.length > 0 && !allow.has("include"), "--include is only valid with run"],
+    [cmd === "run" && !!flags.json, "--json is not valid with run; stdout belongs to the child"],
     [flags.yes && !allow.has("yes"), "--yes is only valid with init"],
     [flags.dryRun && !allow.has("dryRun"), "--dry-run is only valid with init"],
     [flags.targetSet && !allow.has("target"), "--target/--example is only valid with init"],
     [!!flags.only && !allow.has("only"), "--only is only valid with doctor/check"],
-    [flags.ignore.length > 0 && !allow.has("ignore"), "--ignore is only valid with doctor/check"],
+    [
+      flags.ignore.length > 0 && !allow.has("ignore"),
+      "--ignore is only valid with doctor/check/run",
+    ],
     [flags.all && !allow.has("all"), "--all is only valid with doctor/check"],
     [!!flags.arg && !allow.has("arg"), `Unexpected argument: ${flags.arg}`],
   ];
@@ -354,12 +392,14 @@ function listRegistry(flags: CliFlags): number {
   const idW = Math.max(4, ...REGISTRY.map((e) => e.id.length));
   const kindW = Math.max(4, ...REGISTRY.map((e) => e.kind.length));
   console.log(
-    `${c.bold("id".padEnd(idW))}  ${c.bold("kind".padEnd(kindW))}  ${c.bold("env")}  ${c.bold("name")}`,
+    `${c.bold("id".padEnd(idW))}  ${c.bold("kind".padEnd(kindW))}  ${c.bold("env")}  ${c.bold("name")}  ${c.bold("ecosystem / verified")}`,
   );
   console.log("─".repeat(idW + kindW + 40));
   for (const e of REGISTRY) {
     const env = e.kind === "opt-out" || e.kind === "opt-in" ? `${e.env.key}=${e.env.value}` : "-";
-    console.log(`${e.id.padEnd(idW)}  ${e.kind.padEnd(kindW)}  ${env}  ${e.name}`);
+    console.log(
+      `${e.id.padEnd(idW)}  ${e.kind.padEnd(kindW)}  ${env}  ${e.name}  ${e.ecosystem ?? "javascript"} / ${e.verifiedAt ?? "not recorded"}`,
+    );
   }
   console.log(`\n${REGISTRY.length} entries`);
   return EXIT_OK;
@@ -405,6 +445,8 @@ function whyEntry(flags: CliFlags): number {
   } else {
     console.log(`  env:      (none - config/CLI only)`);
   }
+  if (entry.ecosystem) console.log(`  ecosystem: ${entry.ecosystem}`);
+  if (entry.verifiedAt) console.log(`  verified: ${entry.verifiedAt}`);
   if (entry.docs) console.log(`  docs:     ${entry.docs}`);
   if (entry.notes) console.log(`  notes:    ${entry.notes}`);
   return EXIT_OK;
@@ -454,7 +496,12 @@ function emitInitSuccess(
       flags.target === "stdout"
         ? { ...process.env, ...parseEnvFile((opts.dotenvLines ?? []).join("\n")) }
         : process.env;
-    const envFiles = flags.target === "stdout" ? [] : [flags.target];
+    const envFiles =
+      flags.target === "stdout"
+        ? []
+        : [".env", ".env.local"].some((file) => resolve(cwd, file) === resolve(cwd, flags.target))
+          ? [".env", ".env.local"]
+          : [flags.target];
     const report = buildReport(cwd, scan(cwd, processEnv, { envFiles }), {
       actions: [...actions, { type: "message", message }],
     });
@@ -479,7 +526,11 @@ function printInitPlan(
   for (const p of fills) out(c.green(`  ~ ${p.env.key}= → ${p.env.value}`));
   for (const p of oks) out(c.dim(`  · ${p.env.key}=${p.existing} (already set)`));
   for (const p of conflicts) {
-    out(c.red(`  ! ${p.env.key} conflict: have "${p.existing}", want "${p.env.value}" (skipped)`));
+    out(
+      c.red(
+        `  ! ${p.env.key} conflict in ${targetLabel}: have "${p.existing}", want "${p.env.value}" (skipped). Set ${p.env.key}=${p.env.value} in ${targetLabel}.`,
+      ),
+    );
   }
 }
 
@@ -496,7 +547,22 @@ async function init(cwd: string, flags: CliFlags): Promise<number> {
   const fills = plan.filter((p) => p.kind === "fill");
   const oks = plan.filter((p) => p.kind === "ok");
   const conflicts = plan.filter((p) => p.kind === "conflict");
-  const actions = planToActions(plan);
+  const actions = planToActions(plan).map((action) =>
+    action.type === "conflict" ? { ...action, file: flags.target } : action,
+  );
+  // Explain values that would win over the selected write target.
+  if (flags.target !== "stdout") {
+    const higherFiles = resolve(cwd, flags.target) === resolve(cwd, ".env") ? [".env.local"] : [];
+    const layers = loadEnvLayers(cwd, higherFiles);
+    for (const item of plan) {
+      const binding = resolveEnvBinding(item.env.key, {}, process.env, item.env.value, layers);
+      if (binding.actual !== undefined && !matchesOptOut(item.env, binding.actual)) {
+        const message = `${explainEnvBinding(binding)}; this overrides ${flags.target}. Set ${item.env.key}=${item.env.value} in ${binding.file ?? "process environment"}.`;
+        actions.push({ type: "message", message });
+        if (!flags.json) log(flags, message);
+      }
+    }
+  }
   const targetLabel = flags.target === "stdout" ? "stdout" : flags.target;
   const human = humanOut(flags);
 
@@ -547,7 +613,7 @@ async function init(cwd: string, flags: CliFlags): Promise<number> {
 }
 
 function usage(stream: { write(chunk: string): unknown } = output): void {
-  stream.write(`no-telemetry - disable JS/TS library telemetry
+  stream.write(`no-telemetry - disable developer tool telemetry
 
 Usage:
   no-telemetry init [options]
@@ -555,6 +621,7 @@ Usage:
   no-telemetry check [options]
   no-telemetry list [options]
   no-telemetry why <id> [options]
+  no-telemetry run [options] -- <command> [args...]
 
 Commands:
   init     Detect installed libraries and write opt-out env vars
@@ -562,6 +629,7 @@ Commands:
   check    Same as doctor, but exit 1 if any telemetry is still enabled
   list     Dump registry coverage (no package.json required)
   why      Explain one registry entry (env, docs, notes)
+  run      Launch a command with opt-outs injected (no project required)
 
 Shared options:
   --json[=pretty|compact]  Machine-readable JSON (default pretty; compact = one line)
@@ -579,6 +647,15 @@ init options:
   --target <path>          Env file path or stdout (default: .env)
   --example                Shorthand for --target .env.example (commit-safe)
 
+run options:
+  --include <id>           Inject only selected registry IDs (repeatable)
+  --ignore <id>            Exclude registry IDs (repeatable; DO_NOT_TRACK remains)
+  --quiet, -q              Suppress wrapper diagnostics; child output is preserved
+  All env-based entries are injected by default, overriding inherited values.
+  No dotenv files are loaded. --json is not supported for run.
+  Shell syntax requires an explicit shell, e.g. run -- sh -c 'build | tee log'.
+  Windows batch files require run -- cmd.exe /d /s /c "pnpm build".
+
 doctor/check options:
   --only <filter>          installed | failing
   --ignore <value>         Omit library id/name/package from results and check policy
@@ -587,10 +664,11 @@ doctor/check options:
 Exit codes:
   0  Success (doctor always; check when all applicable libs disabled)
   1  Policy failure (check: telemetry still enabled; init aborted)
+  run propagates the child exit code or termination signal.
   2  Tool/usage error (bad flags, missing package.json, non-interactive init without --yes)
 
 Stable programmatic API (import "no-telemetry"):
-  scan, planInit, applyInit, failsCheck, REGISTRY, buildReport, buildErrorReport
+  scan, planInit, applyInit, failsCheck, REGISTRY, buildReport, buildErrorReport, buildRunEnv
 `);
 }
 
@@ -626,7 +704,14 @@ async function main(): Promise<number> {
   const cwd = process.cwd();
   let code = EXIT_OK;
   try {
-    if (flags.cmd === "doctor") code = doctor(cwd, flags);
+    if (flags.cmd === "run") {
+      const [command, ...args] = flags.childArgs ?? [];
+      if (!command)
+        throw new UsageError("usage: no-telemetry run [options] -- <command> [args...]");
+      const prepared = buildRunEnv(process.env, { include: flags.include, ignore: flags.ignore });
+      log(flags, `Injecting ${Object.keys(prepared.assignments).length} telemetry opt-outs.`);
+      code = await executeCommand(command, args, prepared.env);
+    } else if (flags.cmd === "doctor") code = doctor(cwd, flags);
     else if (flags.cmd === "check") code = check(cwd, flags);
     else if (flags.cmd === "init") code = await init(cwd, flags);
     else if (flags.cmd === "list") code = listRegistry(flags);

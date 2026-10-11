@@ -5,6 +5,22 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `run -- <command>` injects opt-outs with include/ignore filters and inherits streams and propagates child exits and signals. No project required.
+- Exported pure `buildRunEnv` environment builder.
+- Reports show winning sources and shadowed assignments. `init` identifies conflicts and overrides.
+- 35 registry entries, verification metadata, and a coverage review with evidence.
+- Packed `run` smoke tests on Node 18/20/22.
+
+### Fixed
+
+- Corrected package matches and accepted values; removed unverified wrappers and SDK matches.
+- Corrected Yarn, Google Cloud, Firebase, and Prisma controls. Sentry CLI remains unsupported.
+- Registry and package tests use data-derived expectations.
+
 ## [0.2.0]
 
 ### Added

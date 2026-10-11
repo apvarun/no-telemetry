@@ -14,7 +14,19 @@ export type EnvBinding = {
   want?: string;
   actual?: string;
   source: EnvSource;
+  /** Winning env-file path, when provenance is available. */
+  file?: string;
+  /** Lower-precedence assignments, highest precedence first. */
+  shadowed?: EnvAssignment[];
 };
+
+export type EnvAssignment = {
+  actual: string;
+  source: Exclude<EnvSource, "unset">;
+  file?: string;
+};
+
+export type EnvLayer = { file: string; values: Record<string, string> };
 
 export type LibraryResult = {
   entry: RegistryEntry;
@@ -161,20 +173,52 @@ export function loadProjectEnv(
   return out;
 }
 
-/** process.env wins over file env; returns value + source. */
+/** Load env files without losing the individual assignment sources. */
+export function loadEnvLayers(
+  cwd: string,
+  envFiles: string[] = [".env", ".env.local"],
+): EnvLayer[] {
+  return envFiles.map((file) => ({ file, values: loadEnvFile(cwd, file) }));
+}
+
+/** process.env wins over file env; old callers need not supply layers. */
 export function resolveEnvBinding(
   key: string,
   fileEnv: Record<string, string>,
   processEnv: Record<string, string | undefined> = process.env,
   want?: string,
+  layers?: EnvLayer[],
 ): EnvBinding {
+  const assignments: EnvAssignment[] = [];
   if (processEnv[key] !== undefined) {
-    return { key, want, actual: processEnv[key], source: "process-env" };
+    assignments.push({ actual: processEnv[key], source: "process-env" });
   }
-  if (fileEnv[key] !== undefined) {
-    return { key, want, actual: fileEnv[key], source: "env-file" };
+  if (layers) {
+    for (const layer of [...layers].reverse()) {
+      const actual = layer.values[key];
+      if (actual !== undefined) assignments.push({ actual, source: "env-file", file: layer.file });
+    }
+  } else if (fileEnv[key] !== undefined) {
+    assignments.push({ actual: fileEnv[key], source: "env-file" });
   }
-  return { key, want, source: "unset" };
+  const [winner, ...shadowed] = assignments;
+  if (!winner) return { key, want, source: "unset" };
+  return { key, want, ...winner, ...(shadowed.length ? { shadowed } : {}) };
+}
+
+/** Human-readable source and override explanation for a registry observation. */
+export function explainEnvBinding(binding: EnvBinding): string {
+  if (binding.source === "unset")
+    return `${binding.key} is unset; set ${binding.key}=${binding.want}`;
+  const source = binding.file ?? binding.source;
+  const value = JSON.stringify(binding.actual);
+  const overrides = (binding.shadowed ?? [])
+    .filter((assignment) => assignment.actual !== binding.actual)
+    .map(
+      (assignment) =>
+        `${assignment.file ?? assignment.source}=${JSON.stringify(assignment.actual)}`,
+    );
+  return `${binding.key}=${value} from ${source}${overrides.length ? ` overrides ${overrides.join(", ")}` : ""}`;
 }
 
 /** process.env wins over .env (value only; prefer resolveEnvBinding for source). */
@@ -201,6 +245,7 @@ export function evaluate(
   deps: Set<string>,
   fileEnv: Record<string, string>,
   processEnv: Record<string, string | undefined> = process.env,
+  layers?: EnvLayer[],
 ): LibraryResult {
   if (!isInstalled(entry, deps)) {
     return result(entry, false, "not_found", "(package not installed)", []);
@@ -217,7 +262,13 @@ export function evaluate(
       );
 
     case "opt-in": {
-      const binding = resolveEnvBinding(entry.env.key, fileEnv, processEnv, entry.env.value);
+      const binding = resolveEnvBinding(
+        entry.env.key,
+        fileEnv,
+        processEnv,
+        entry.env.value,
+        layers,
+      );
       if (binding.actual !== undefined && entry.enableWhen.includes(binding.actual)) {
         return result(entry, true, "enabled", `${entry.env.key}=${binding.actual}`, [binding]);
       }
@@ -229,7 +280,9 @@ export function evaluate(
     case "opt-out": {
       // Primary first. Fallback alternates only apply while the primary key is unset.
       const signals = [entry.env, ...(entry.alsoSatisfiedBy ?? [])];
-      const env = signals.map((s) => resolveEnvBinding(s.key, fileEnv, processEnv, s.value));
+      const env = signals.map((s) =>
+        resolveEnvBinding(s.key, fileEnv, processEnv, s.value, layers),
+      );
       const primary = env[0]!;
       const primaryHit = matchesOptOut(entry.env, primary.actual) ? 0 : undefined;
       const canUseAlternates = entry.alternatePolicy !== "fallback" || primary.actual === undefined;
@@ -255,8 +308,12 @@ export function evaluate(
 /** Whether an observed value satisfies an opt-out binding's documented semantics. */
 export function matchesOptOut(env: EnvOptOut, actual: string | undefined): boolean {
   if (actual === undefined) return false;
+  if (env.accepts === "set") return true;
   if (env.accepts === "non-empty") return actual.length > 0;
-  return (env.accepts ?? [env.value]).includes(actual);
+  const accepted = env.accepts ?? [env.value];
+  return env.caseInsensitive
+    ? accepted.some((value) => value.toLowerCase() === actual.toLowerCase())
+    : accepted.includes(actual);
 }
 
 export function scan(
@@ -265,8 +322,12 @@ export function scan(
   options: ScanOptions = {},
 ): LibraryResult[] {
   const deps = readDeps(cwd);
-  const fileEnv = loadProjectEnv(cwd, options.envFiles);
-  return REGISTRY.map((e) => evaluate(e, deps, fileEnv, processEnv));
+  const layers = loadEnvLayers(cwd, options.envFiles);
+  const fileEnv = Object.assign({}, ...layers.map((layer) => layer.values)) as Record<
+    string,
+    string
+  >;
+  return REGISTRY.map((e) => evaluate(e, deps, fileEnv, processEnv, layers));
 }
 
 export type InitPlanItem =

@@ -24,7 +24,7 @@ Node 18+ required.
 ## Adding a library to the registry
 
 1. Confirm an **official, documented** env-var opt-out (link it in the PR description and set **required** `docs` on the entry).
-2. Prefer tools that show up in **project `package.json`** (direct deps). Machine-wide-only tools (browsers, OS) belong elsewhere (e.g. toptout), not here.
+2. Verify the component that reads the control. Use direct npm package matches only when verified; use `packages: []` for external tools available through `run`, `list`, and `why`.
 3. Edit `src/registry.ts`:
    - Stable **`id`** (kebab-case, usually the npm package name).
    - `kind`: `opt-out` | `opt-in` | `unsupported`.
@@ -33,9 +33,10 @@ Node 18+ required.
    - For `opt-out` only: optional `alsoSatisfiedBy: EnvOptOut[]` when the tool also honors another signal (e.g. `DO_NOT_TRACK=1`).
    - Set `alternatePolicy: "fallback"` when alternates apply only if the primary key is unset; omit it for the default OR behavior.
    - For `opt-in`: `enableWhen` values that mean telemetry is **on**.
-   - **`docs`** URL (required) and optional `notes` for quirks.
+   - **`docs`** URL (required), `ecosystem`, `verifiedAt`, and `notes` for component/version limits.
+   - `accepts` lists verified alternatives, `"non-empty"` excludes empty values, and `"set"` accepts any defined value including empty. Set `caseInsensitive` only when the upstream control compares values that way.
 4. Golden tests iterate the full `REGISTRY` - new entries are covered automatically. Add a focused test only for special matching rules.
-5. Update `README.md` only if the public command surface changes (registry details live in source).
+5. Record evidence and rejected/deferred candidates in `REGISTRY-COVERAGE.md`; keep descriptive README counts current.
 
 ### Registry schema & id stability
 
@@ -73,7 +74,7 @@ Public (semver) surface from `import "no-telemetry"`:
 | `buildReport` / `buildErrorReport`            | JSON DTO (`version: 1`; optional `error`) |
 | `LibraryResult`, `Status`, `ReportV1`, …      | Types                                     |
 
-Command-scoped CLI flags: `init` owns `--yes` / `--dry-run` / `--target` / `--example`; `doctor`/`check` own `--only` / `--ignore` / `--all`; `list` / `why` take only shared flags. `--target` accepts an env-file path or `stdout`. Cross-use is a usage error (exit 2).
+Command-scoped CLI flags: `init` owns `--yes` / `--dry-run` / `--target` / `--example`; `doctor`/`check` own `--only` / `--ignore` / `--all`; `run` owns repeatable exact-ID `--include` / `--ignore` and requires `--` before the command; it rejects `--json`. `list` / `why` take only shared flags. `--target` accepts an env-file path or `stdout`. Cross-use is a usage error (exit 2).
 
 CLI human table formatting is **not** a stable contract - use `--json` / `--json=compact` and exit codes.
 

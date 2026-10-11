@@ -29,7 +29,7 @@ export type ReportAction =
   | { type: "add"; key: string; value: string }
   | { type: "fill"; key: string; value: string }
   | { type: "ok"; key: string; value: string }
-  | { type: "conflict"; key: string; value: string; existing: string }
+  | { type: "conflict"; key: string; value: string; existing: string; file?: string }
   | { type: "message"; message: string };
 
 export type ReportV1 = {

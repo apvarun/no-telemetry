@@ -23,6 +23,8 @@ export {
   matchesIgnore,
   resolveEnv,
   resolveEnvBinding,
+  loadEnvLayers,
+  explainEnvBinding,
   matchesOptOut,
   type LibraryResult,
   type Status,
@@ -34,6 +36,8 @@ export {
   type ApplyInitResult,
   type EnvBinding,
   type EnvSource,
+  type EnvAssignment,
+  type EnvLayer,
   type FilterOptions,
 } from "./core.ts";
 export {
@@ -48,3 +52,5 @@ export {
   type ReportAction,
   type ReportVersion,
 } from "./report.ts";
+
+export { buildRunEnv, type RunEnvOptions, type RunEnvResult } from "./run.ts";

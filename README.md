@@ -34,7 +34,14 @@ Detect telemetry in your JS/TS dependencies and disable it in one command.
 
 ## Quick start
 
-Run these commands from the directory containing your `package.json`:
+Launch a command with verified opt-outs from any directory, including outside a project:
+
+```bash
+npx no-telemetry run -- npm run build
+npx no-telemetry run --include dotnet -- dotnet build
+```
+
+For project detection, run these commands from the directory containing your `package.json`:
 
 ```bash
 npx no-telemetry init -y   # add missing opt-out variables to .env
@@ -75,7 +82,7 @@ Prisma      ✓ disabled  CHECKPOINT_DISABLE=1
 
 ## Coverage
 
-The bundled registry currently knows about **43 tools**: 34 documented environment-variable opt-outs, 2 opt-in checks, and 7 config-only tools that are detected and reported without being changed.
+The registry has **78 entries**: 63 environment opt-outs, 3 opt-in checks, and 12 manual or unsupported controls across JavaScript, Python, .NET, Rust/Go, and cloud tooling. See the [coverage review](./REGISTRY-COVERAGE.md) for evidence and version limits.
 
 That includes Next.js, Prisma, Vercel CLI, Turborepo, Storybook, Expo, Wrangler, Supabase CLI, GitHub CLI, Claude Code, and more.
 
@@ -109,9 +116,13 @@ The CLI is deliberately narrow:
 
 `no-telemetry` scans one `package.json` in the current directory. It does not currently scan workspaces or transitive dependencies.
 
+Entries without npm matches are available through `run`, `list`, and `why`; Python, .NET, Go, and other manifests are not scanned.
+
 The registry focuses on environment-variable opt-outs. Tools that require config files or saved CLI state are reported as `unsupported` and left untouched.
 
-`doctor` and `check` resolve values in this precedence order: process environment, `.env.local`, then `.env`.
+`doctor` and `check` use process environment, then `.env.local`, then `.env`. Empty process values still win. Reports identify the winning source, shadowed values, and assignment to fix. Only effective values and documented alternate signals determine status.
+
+JSON retains `version: 1` and existing `source` tokens, adding optional `file` and `shadowed` fields in precedence order. It reports only registry keys. `init` names conflicting assignments and values that would override its target.
 
 ## CI
 
@@ -132,6 +143,31 @@ To apply opt-outs after scaffolding and then verify them:
 The first `--yes` accepts the `npx` install. The `-y` after `init` accepts the file write.
 
 ## Command reference
+
+### `run`
+
+```text
+no-telemetry run [--include <id>] [--ignore <id>] [--quiet] -- <command> [args...]
+```
+
+`--` is required; arguments after it pass unchanged. By default, `run` injects all verified opt-outs, including disable values for opt-in tools, plus `DO_NOT_TRACK=1`. Repeat `--include` or `--ignore` with exact registry IDs. Exclusion wins; DNT remains. Unknown IDs fail before launch. Unsupported entries add no variables.
+
+`run` overrides telemetry values in a copy of the inherited environment. It inherits streams and working directory, reads no dotenv files, and needs no project. It changes neither files nor the parent environment. Diagnostics go to stderr; `--quiet` suppresses them. `--json` is rejected.
+
+`run` forwards SIGINT/SIGTERM and returns the child exit code or POSIX termination signal. Windows uses conventional signal exit codes. Usage errors, launch failures, or conflicting registry assignments return `2`.
+
+Pipelines, shell built-ins, redirection, and Windows batch commands need an explicit shell:
+
+```bash
+no-telemetry run -- sh -c 'npm run build | tee build.log'
+no-telemetry run -- sh -c 'cd packages/app && npm run build'
+```
+
+```powershell
+no-telemetry run -- cmd.exe /d /s /c "pnpm build"
+```
+
+Tool flags and application configuration may override these settings. Check entry notes for version limits. `run` does not block network traffic.
 
 ### `init`
 
@@ -223,9 +259,11 @@ npx no-telemetry why turbo --json
 | `1`  | Policy failure; `check` found enabled telemetry, or interactive `init` was aborted    |
 | `2`  | Tool or usage error; bad flags, missing `package.json`, or unconfirmed non-TTY `init` |
 
+`run` propagates child exit codes or signals; wrapper errors use `2`.
+
 ### Registry details
 
-Library definitions live in [`src/registry.ts`](./src/registry.ts), the single source of truth. Each has a stable `id` such as `next`, `prisma`, or `vercel` for `--ignore`, `why`, and JSON output. Every environment variable is curated against official documentation.
+Library definitions live in [`src/registry.ts`](./src/registry.ts), the single source of truth. Optional `ecosystem` and `verifiedAt` metadata are exposed by `list` and `why`. Each has a stable `id` such as `next`, `prisma`, or `vercel` for `--ignore`, `why`, and JSON output. Every environment variable is curated against official documentation.
 
 Some tools honor a proprietary opt-out or `DO_NOT_TRACK` (for example, Turbo, Railway, and Supabase). Alternate signals use OR semantics by default. Entries with `alternatePolicy: "fallback"` use alternates only when the primary key is unset; this models tools such as GitHub CLI, where `GH_TELEMETRY` takes precedence. `init` still writes the primary tool-specific key plus `DO_NOT_TRACK=1`.
 
@@ -237,7 +275,7 @@ Registry entries are a discriminated union:
 | `opt-in`      | Telemetry is off by default; `enableWhen` values mean it is on    |
 | `unsupported` | No environment-variable opt-out; config or CLI action is required |
 
-`opt-out` bindings may include `accepts` for multiple accepted values or non-empty semantics. Entries can also include `alsoSatisfiedBy` and `alternatePolicy` for additional signals.
+`opt-out` bindings may include `accepts` for multiple accepted values or `"non-empty"` / `"set"` semantics (`"set"` includes empty values). `caseInsensitive` records documented case-insensitive comparisons. Entries can also include `alsoSatisfiedBy` and `alternatePolicy` for additional signals.
 
 ## Programmatic API
 
@@ -258,10 +296,23 @@ const report = buildReport(cwd, results);
 | `planInit` / `applyInit`           | Plan and apply idempotent dotenv writes |
 | `failsCheck`                       | Apply the check policy                  |
 | `buildReport` / `buildErrorReport` | Build the JSON DTO (`version: 1`)       |
+| `buildRunEnv`                      | Pure child environment builder          |
 | `REGISTRY`                         | Read the curated library data           |
 | `filterResults`                    | Apply presentation filters              |
 
 `LibraryResult.status` uses machine-stable tokens: `disabled`, `enabled`, `not_applicable`, `not_found`, and `unsupported`. The CLI maps these to human labels such as `✓ disabled` and `- n/a`.
+
+Build an isolated environment without launching a process:
+
+```ts
+import { buildRunEnv } from "no-telemetry";
+const { env, assignments } = buildRunEnv(process.env, {
+  include: ["dotnet", "huggingface-hub"],
+  ignore: ["dotnet"],
+});
+```
+
+`buildRunEnv` is pure; `assignments` contains only injected keys. For filename provenance, pass `loadEnvLayers` output as the final argument to `resolveEnvBinding` or `evaluate`. Existing calls still work. Custom `scan` file lists use later-file-wins order.
 
 Target-specific plans must be applied to the same target:
 

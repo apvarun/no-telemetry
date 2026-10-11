@@ -103,8 +103,8 @@ test("evaluate: fallback alternates respect GitHub CLI primary precedence", () =
   expect(github.alternatePolicy).toBe("fallback");
 
   const primaryEnabled = evaluate(
-    github,
-    new Set(["gh"]),
+    { ...github, packages: ["test-gh"] },
+    new Set(["test-gh"]),
     {},
     {
       GH_TELEMETRY: "enabled",
@@ -115,8 +115,8 @@ test("evaluate: fallback alternates respect GitHub CLI primary precedence", () =
   expect(failsCheck(primaryEnabled)).toBe(true);
 
   const primaryDisabled = evaluate(
-    github,
-    new Set(["gh"]),
+    { ...github, packages: ["test-gh"] },
+    new Set(["test-gh"]),
     {},
     {
       GH_TELEMETRY: "false",
@@ -125,7 +125,12 @@ test("evaluate: fallback alternates respect GitHub CLI primary precedence", () =
   );
   expect(primaryDisabled.status).toBe("disabled");
 
-  const viaFallback = evaluate(github, new Set(["gh"]), {}, { DO_NOT_TRACK: "true" });
+  const viaFallback = evaluate(
+    { ...github, packages: ["test-gh"] },
+    new Set(["test-gh"]),
+    {},
+    { DO_NOT_TRACK: "true" },
+  );
   expect(viaFallback.status).toBe("disabled");
   expect(failsCheck(viaFallback)).toBe(false);
   expect(github.alsoSatisfiedBy).toHaveLength(1);
@@ -141,11 +146,13 @@ test("evaluate: registry-specific accepted opt-out values", () => {
   for (const [id, pkg, key, accepted] of cases) {
     const entry = REGISTRY.find((e) => e.id === id)!;
     for (const value of accepted) {
-      const result = evaluate(entry, new Set([pkg]), {}, { [key]: value });
+      const result = evaluate({ ...entry, packages: [pkg] }, new Set([pkg]), {}, { [key]: value });
       expect(result.status).toBe("disabled");
       expect(result.detail).toBe(`${key}=${value}`);
     }
-    expect(evaluate(entry, new Set([pkg]), {}, { [key]: "" }).status).toBe("enabled");
+    expect(evaluate({ ...entry, packages: [pkg] }, new Set([pkg]), {}, { [key]: "" }).status).toBe(
+      "enabled",
+    );
   }
 
   const hookdeck = REGISTRY.find((e) => e.id === "hookdeck")!;
@@ -233,11 +240,11 @@ test("evaluate: netlify unsupported", () => {
 
 test("registry kinds and ids are unique and well-formed", () => {
   const ids = new Set<string>();
-  expect(REGISTRY.length).toBeGreaterThanOrEqual(12);
+  expect(REGISTRY.length).toBeGreaterThan(0);
   for (const entry of REGISTRY) {
     expect(["opt-out", "opt-in", "unsupported"]).toContain(entry.kind);
     expect(entry.id).toBeTruthy();
-    expect(entry.packages.length).toBeGreaterThan(0);
+    expect(Array.isArray(entry.packages)).toBe(true);
     expect(ids.has(entry.id)).toBe(false);
     ids.add(entry.id);
     if (entry.kind === "opt-out" || entry.kind === "opt-in") {
@@ -411,6 +418,10 @@ test("applicable statuses are only disabled|enabled", () => {
 
 test("golden: every registry entry has correct status matrix", () => {
   for (const entry of REGISTRY) {
+    if (entry.packages.length === 0) {
+      expect(evaluate(entry, new Set([entry.id]), {}, {}).status).toBe("not_found");
+      continue;
+    }
     const pkg = installPackage(entry);
     const depsInstalled = new Set([pkg]);
     const depsEmpty = new Set<string>();
@@ -472,6 +483,7 @@ test("golden: full project all disabled then all enabled", () => {
   const deps: Record<string, string> = {};
   const envLines: string[] = [];
   for (const entry of REGISTRY) {
+    if (!entry.packages.length) continue;
     deps[installPackage(entry)] = "1";
     if (entry.kind === "opt-out") {
       envLines.push(`${entry.env.key}=${entry.env.value}`);
@@ -483,20 +495,26 @@ test("golden: full project all disabled then all enabled", () => {
     const ok = scan(dirOk, {});
     expect(ok.some(failsCheck)).toBe(false);
     for (const r of ok) {
+      if (!r.installed) {
+        expect(r.status).toBe("not_found");
+        continue;
+      }
       if (r.entry.kind === "opt-out") expect(r.status).toBe("disabled");
       if (r.entry.kind === "opt-in") expect(r.status).toBe("not_applicable");
       if (r.entry.kind === "unsupported") expect(r.status).toBe("unsupported");
     }
 
     const bad = scan(dirBad, {});
-    expect(bad.filter(failsCheck).length).toBe(REGISTRY.filter((e) => e.kind === "opt-out").length);
+    expect(bad.filter(failsCheck).length).toBe(
+      REGISTRY.filter((e) => e.kind === "opt-out" && e.packages.length > 0).length,
+    );
   } finally {
     rmSync(dirOk, { recursive: true, force: true });
     rmSync(dirBad, { recursive: true, force: true });
   }
 });
 
-test("golden: prisma dual package names both install", () => {
+test("golden: prisma CLI package opts out", () => {
   const prisma = REGISTRY.find((e) => e.id === "prisma")!;
   for (const pkg of prisma.packages) {
     const r = evaluate(prisma, new Set([pkg]), {}, { CHECKPOINT_DISABLE: "1" });
@@ -647,6 +665,37 @@ test("summarize matches applicable disabled counts", () => {
     expect(s.applicable).toBe(2);
     expect(s.disabled).toBe(1);
     expect(s.enabled).toBe(1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("scan keeps file provenance, all shadowed assignments, and caller env-file ordering", () => {
+  const dir = fixture(
+    { dependencies: { next: "1", turbo: "1" } },
+    "NEXT_TELEMETRY_DISABLED=1\nDO_NOT_TRACK=1\n",
+    { envLocal: "NEXT_TELEMETRY_DISABLED=0\n" },
+  );
+  try {
+    const next = scan(dir, { NEXT_TELEMETRY_DISABLED: "" }).find((r) => r.entry.id === "next")!;
+    expect(next.status).toBe("enabled");
+    expect(next.env[0]).toMatchObject({
+      actual: "",
+      source: "process-env",
+      shadowed: [
+        { file: ".env.local", actual: "0", source: "env-file" },
+        { file: ".env", actual: "1", source: "env-file" },
+      ],
+    });
+    const reversed = scan(dir, {}, { envFiles: [".env.local", ".env"] }).find(
+      (r) => r.entry.id === "next",
+    )!;
+    expect(reversed.status).toBe("disabled");
+    expect(reversed.env[0]?.file).toBe(".env");
+    const turbo = scan(dir, {}).find((r) => r.entry.id === "turbo")!;
+    expect(turbo.status).toBe("disabled");
+    expect(turbo.detail).toContain("DO_NOT_TRACK");
+    expect(turbo.env[1]?.file).toBe(".env");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

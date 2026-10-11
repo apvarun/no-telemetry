@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync, rmSync, readFileSync, existsSync, realpathSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { expect, test, beforeAll } from "vite-plus/test";
 import { fileURLToPath } from "node:url";
 
@@ -575,3 +575,214 @@ test("cli check respects turbo via DO_NOT_TRACK only", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("cli run works outside a project, preserves arguments and streams, and loads no dotenv", () => {
+  const cwd = fixture({});
+  rmSync(join(cwd, "package.json"));
+  writeFileSync(join(cwd, ".env"), "CUSTOM_FROM_DOTENV=secret\n");
+  try {
+    const args = ["--help", "--json", "a b", "", "$HOME", "$(echo unsafe)", ";", "--"];
+    const result = run(
+      [
+        "run",
+        "--quiet",
+        "--",
+        process.execPath,
+        "-e",
+        'process.stdout.write(JSON.stringify({args:process.argv.slice(1),next:process.env.NEXT_TELEMETRY_DISABLED,dnt:process.env.DO_NOT_TRACK,custom:process.env.RUN_TEST_CUSTOM,dotenv:process.env.CUSTOM_FROM_DOTENV,cwd:process.cwd()}));process.stderr.write("child error");',
+        "--",
+        ...args,
+      ],
+      {
+        cwd,
+        env: {
+          NEXT_TELEMETRY_DISABLED: "0",
+          RUN_TEST_CUSTOM: "keep",
+          CUSTOM_FROM_DOTENV: undefined,
+        },
+      },
+    );
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      args,
+      next: "1",
+      dnt: "1",
+      custom: "keep",
+      cwd: realpathSync(cwd),
+    });
+    expect(result.stderr).toBe("child error");
+    expect(existsSync(join(cwd, "package.json"))).toBe(false);
+    expect(readFileSync(join(cwd, ".env"), "utf8")).toBe("CUSTOM_FROM_DOTENV=secret\n");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("cli run forwards stdin and exit codes", () => {
+  const result = run(
+    [
+      "run",
+      "--quiet",
+      "--",
+      process.execPath,
+      "-e",
+      'process.stdin.pipe(process.stdout);process.stdin.on("end",()=>{process.exitCode=37})',
+    ],
+    { cwd: root, input: "input bytes\n" },
+  );
+  expect(result.stdout).toBe("input bytes\n");
+  expect(result.status).toBe(37);
+});
+
+test("cli run supports selection and exclusions", () => {
+  const result = run(
+    [
+      "run",
+      "--include",
+      "next",
+      "--ignore=next",
+      "--quiet",
+      "--",
+      process.execPath,
+      "-e",
+      "console.log(process.env.NEXT_TELEMETRY_DISABLED,process.env.DO_NOT_TRACK)",
+    ],
+    { cwd: root, env: { NEXT_TELEMETRY_DISABLED: "0" } },
+  );
+  expect(result.status).toBe(0);
+  expect(result.stdout.trim()).toBe("0 1");
+});
+
+test("cli run validates wrapper flags and command before launch", () => {
+  for (const args of [
+    ["run"],
+    ["run", "--"],
+    ["run", "node"],
+    ["run", "--include", "missing", "--", process.execPath],
+    ["run", "--ignore=missing", "--", process.execPath],
+    ["run", "--json", "--", process.execPath],
+    ["run", "--dry-run", "--", process.execPath],
+    ["doctor", "--include", "next"],
+  ]) {
+    const result = run(args);
+    expect(result.status).toBe(2);
+    expect(result.stdout).toBe("");
+  }
+  const missing = run(["run", "--quiet", "--", "no-telemetry-nonexistent-command"]);
+  expect(missing.status).toBe(2);
+  expect(missing.stderr).toContain("ENOENT");
+});
+
+test.skipIf(process.platform === "win32")("cli run preserves a child's termination signal", () => {
+  const result = run([
+    "run",
+    "--quiet",
+    "--",
+    process.execPath,
+    "-e",
+    'process.kill(process.pid,"SIGTERM")',
+  ]);
+  expect(result.status).toBeNull();
+  expect(result.signal).toBe("SIGTERM");
+});
+
+test("cli explains winning file and process overrides without exposing unrelated env", () => {
+  const cwd = fixture(
+    { dependencies: { next: "1" } },
+    "NEXT_TELEMETRY_DISABLED=1\nUNRELATED_SECRET=do-not-show\n",
+  );
+  writeFileSync(join(cwd, ".env.local"), "NEXT_TELEMETRY_DISABLED=0\n");
+  try {
+    const human = run(["doctor"], { cwd, env: { NEXT_TELEMETRY_DISABLED: "" } });
+    expect(human.stdout).toContain(
+      'NEXT_TELEMETRY_DISABLED="" from process-env overrides .env.local="0", .env="1"',
+    );
+    expect(human.stdout).toContain("Set NEXT_TELEMETRY_DISABLED=1 in process environment");
+    expect(human.stdout).not.toContain("UNRELATED_SECRET");
+    const json = JSON.parse(
+      run(["check", "--json"], { cwd, env: { NEXT_TELEMETRY_DISABLED: undefined } }).stdout,
+    );
+    const next = json.libraries.find((entry: { id: string }) => entry.id === "next");
+    expect(next.env[0]).toMatchObject({
+      source: "env-file",
+      file: ".env.local",
+      actual: "0",
+      shadowed: [{ source: "env-file", file: ".env", actual: "1" }],
+    });
+    expect(json.version).toBe(1);
+    const init = run(["init", "--dry-run"], { cwd, env: { NEXT_TELEMETRY_DISABLED: undefined } });
+    expect(init.stderr).toContain("this overrides .env");
+    const initJson = JSON.parse(
+      run(["init", "--dry-run", "--json", "--target", "./.env"], {
+        cwd,
+        env: { NEXT_TELEMETRY_DISABLED: undefined },
+      }).stdout,
+    );
+    expect(
+      initJson.libraries.find((entry: { id: string }) => entry.id === "next").env[0].file,
+    ).toBe(".env.local");
+    expect(
+      initJson.actions.some((action: { message?: string }) =>
+        action.message?.includes("this overrides ./.env"),
+      ),
+    ).toBe(true);
+    const custom = join(cwd, "policy.env");
+    writeFileSync(custom, "NEXT_TELEMETRY_DISABLED=0\n");
+    const conflict = run(["init", "--dry-run", "--target", custom], {
+      cwd,
+      env: { NEXT_TELEMETRY_DISABLED: undefined },
+    });
+    expect(conflict.stdout).toContain(`conflict in ${custom}`);
+    expect(conflict.stdout).toContain(`Set NEXT_TELEMETRY_DISABLED=1 in ${custom}`);
+    const conflictJson = JSON.parse(
+      run(["init", "--dry-run", "--json", "--target", custom], { cwd }).stdout,
+    );
+    expect(
+      conflictJson.actions.find((action: { type: string }) => action.type === "conflict").file,
+    ).toBe(custom);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test.skipIf(process.platform === "win32")(
+  "cli run forwards SIGINT and SIGTERM to a ready child",
+  async () => {
+    for (const signal of ["SIGINT", "SIGTERM"] as const) {
+      const child = spawn(
+        process.execPath,
+        [
+          cliPath,
+          "run",
+          "--quiet",
+          "--",
+          process.execPath,
+          "-e",
+          `process.on("${signal}",()=>{process.stdout.write("forwarded");process.exit(17)});process.stdout.write("ready");setInterval(()=>{},1000);`,
+        ],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      );
+      let output = "";
+      const outcome = await new Promise<number | null>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          child.kill("SIGKILL");
+          reject(new Error("child signal timeout"));
+        }, 5000);
+        child.once("error", (error) => {
+          clearTimeout(timer);
+          reject(error);
+        });
+        child.once("close", (code) => {
+          clearTimeout(timer);
+          resolve(code);
+        });
+        child.stdout.on("data", (data) => {
+          output += data.toString();
+          if (output === "ready") child.kill(signal);
+        });
+      });
+      expect(outcome).toBe(17);
+      expect(output).toBe("readyforwarded");
+    }
+  },
+);
