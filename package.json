@@ -1,6 +1,6 @@
 {
   "name": "no-telemetry",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Detect JS/TS libraries with telemetry and set opt-out env vars in one command.",
   "homepage": "https://github.com/apvarun/no-telemetry#readme",
   "bugs": {
